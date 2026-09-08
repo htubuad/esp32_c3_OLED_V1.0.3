@@ -34,6 +34,7 @@ int mqtt_get_msg_count(void);
 const char *mqtt_get_msg_line(int idx);
 void mqtt_advance_msg_idx(void);
 int mqtt_get_msg_idx(void);
+int mqtt_get_all_msg_lines(char out[][128], int max_lines);
 
 esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos);
 esp_err_t mqtt_publish_aliyun_params(const char *params_json);

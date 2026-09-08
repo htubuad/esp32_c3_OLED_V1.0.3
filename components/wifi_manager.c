@@ -82,7 +82,6 @@ static void mdns_unregister_sta(void)
 #define NVS_KEY_PASS  "pass"
 
 #define AP_DEFAULT_SSID  "ESP32-C3-Setup"
-#define AP_DEFAULT_PASS  ""
 
 #define MAX_RETRY      3
 #define CONNECT_TIMEOUT_SEC  15
@@ -304,7 +303,7 @@ void wifi_init_sta(void)
         ESP_LOGI(TAG, "No saved credentials, starting AP for provisioning...");
     }
 
-    wifi_start_ap(AP_DEFAULT_SSID, AP_DEFAULT_PASS);
+    wifi_start_ap(AP_DEFAULT_SSID);
 }
 
 esp_err_t wifi_try_connect(const char *ssid, const char *password)
@@ -448,6 +447,8 @@ static void stop_ap_task(void *arg)
 
     ESP_LOGI(TAG, "Switching APSTA -> STA only");
 
+    dns_server_stop();
+
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Set STA mode failed: %s", esp_err_to_name(err));
@@ -460,7 +461,7 @@ static void stop_ap_task(void *arg)
     vTaskDelete(NULL);
 }
 
-void wifi_start_ap(const char *ap_ssid, const char *ap_password)
+void wifi_start_ap(const char *ap_ssid)
 {
     if (!s_wifi_event_group) {
         s_wifi_event_group = xEventGroupCreate();
@@ -498,12 +499,7 @@ void wifi_start_ap(const char *ap_ssid, const char *ap_password)
     ap_config.ap.ssid_len = strlen((char *)ap_config.ap.ssid);
     ap_config.ap.channel = 1;
     ap_config.ap.max_connection = 4;
-    if (ap_password && strlen(ap_password) >= 8) {
-        strncpy((char *)ap_config.ap.password, ap_password, sizeof(ap_config.ap.password) - 1);
-        ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    } else {
-        ap_config.ap.authmode = WIFI_AUTH_OPEN;
-    }
+    ap_config.ap.authmode = WIFI_AUTH_OPEN;
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
 
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -515,30 +511,20 @@ void wifi_start_ap(const char *ap_ssid, const char *ap_password)
     vTaskDelay(pdMS_TO_TICKS(300));
     mdns_register_ap();
 
+    dns_server_start();
+
     esp_netif_ip_info_t ip_info;
     if (esp_netif_get_ip_info(s_netif_ap, &ip_info) == ESP_OK) {
         snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&ip_info.ip));
         ESP_LOGI(TAG, "========================================");
-        ESP_LOGI(TAG, "   AP Mode Active");
+        ESP_LOGI(TAG, "   AP Mode Active (OPEN)");
         ESP_LOGI(TAG, "   SSID : %s", ssid);
-        if (ap_password && strlen(ap_password) >= 8) {
-            ESP_LOGI(TAG, "   PASS : %s", ap_password);
-        }
         ESP_LOGI(TAG, "   IP   : %s", s_ip_str);
         ESP_LOGI(TAG, "   URL  : http://%s.local", MDNS_HOSTNAME);
         ESP_LOGI(TAG, "========================================");
     } else {
         memset(s_ip_str, 0, sizeof(s_ip_str));
     }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    esp_netif_dns_info_t dns = {0};
-    dns.ip.u_addr.ip4.addr = htonl(0xC0A80401);
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    esp_netif_set_dns_info(s_netif_ap, ESP_NETIF_DNS_MAIN, &dns);
-
-    dns_server_start();
 }
 
 void wifi_update_rssi(void)

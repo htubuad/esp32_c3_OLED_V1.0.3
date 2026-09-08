@@ -41,7 +41,7 @@ void wifi_cred_clear(void);
 esp_err_t wifi_scan_aps(wifi_ap_info_t *out, uint16_t *count);
 esp_err_t wifi_try_connect(const char *ssid, const char *password);
 
-void wifi_start_ap(const char *ap_ssid, const char *ap_password);
+void wifi_start_ap(const char *ap_ssid);
 bool wifi_is_ap_active(void);
 
 #endif

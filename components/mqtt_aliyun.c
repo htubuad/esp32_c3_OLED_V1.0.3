@@ -228,6 +228,17 @@ void mqtt_advance_msg_idx(void)
 
 int mqtt_get_msg_idx(void) { return s_msg_idx; }
 
+int mqtt_get_all_msg_lines(char out[][128], int max_lines)
+{
+    if (!out || max_lines <= 0) return 0;
+    int cnt = s_msg_count < max_lines ? s_msg_count : max_lines;
+    for (int i = 0; i < cnt; i++) {
+        strncpy(out[i], s_msg_lines[i], 127);
+        out[i][127] = '\0';
+    }
+    return cnt;
+}
+
 static int hmac_sha256_hex(const char *key, size_t key_len,
                            const char *msg, size_t msg_len,
                            char *out, size_t out_size)
@@ -383,6 +394,43 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     led_set(led_on);
                     ESP_LOGI(TAG, "LED %s (cloud cmd)", led_on ? "ON" : "OFF");
                 }
+            } else {
+                s_msg_count = 0;
+                s_msg_idx = 0;
+                cJSON *child = root->child;
+                while (child && s_msg_count < MQTT_MSG_MAX_LINES) {
+                    char val_str[24];
+                    const char *key_name = child->string;
+                    const char *val_text = NULL;
+
+                    if (cJSON_IsBool(child)) {
+                        val_text = cJSON_IsTrue(child) ? "ON" : "OFF";
+                    } else if (cJSON_IsNumber(child)) {
+                        double v = child->valuedouble;
+                        if (v == (double)(long long)v) {
+                            snprintf(val_str, sizeof(val_str), "%lld", (long long)v);
+                        } else {
+                            snprintf(val_str, sizeof(val_str), "%.1f", v);
+                        }
+                    } else if (cJSON_IsString(child)) {
+                        snprintf(val_str, sizeof(val_str), "%s", child->valuestring);
+                    } else {
+                        child = child->next;
+                        continue;
+                    }
+
+                    if (key_name) {
+                        char line[32];
+                        int n = snprintf(line, sizeof(line), "%s:", key_name);
+                        const char *disp = val_text ? val_text : val_str;
+                        snprintf(line + n, sizeof(line) - n, "%s", disp ? disp : "?");
+                        strncpy(s_msg_lines[s_msg_count], line, sizeof(s_msg_lines[s_msg_count]) - 1);
+                        s_msg_lines[s_msg_count][sizeof(s_msg_lines[s_msg_count]) - 1] = '\0';
+                        s_msg_count++;
+                    }
+                    child = child->next;
+                }
+                ESP_LOGI(TAG, "Flat JSON parsed, %d msg lines", s_msg_count);
             }
 
             {

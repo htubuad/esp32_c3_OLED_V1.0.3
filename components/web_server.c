@@ -135,6 +135,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<div class='row'><span class='label'>wd_b</span><span class='val' id='val-wd_b'>--</span></div>"
         "<div class='row'><span class='label'>LED</span><span class='val' id='val-led'>--</span></div>"
 
+        "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>MQTT 消息</h3>"
+        "<div id='msg-lines-box' style='background:#1e1e2e;color:#cdd6f4;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:13px;min-height:40px;max-height:160px;overflow-y:auto'>暂无数据</div>"
+
         "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>发送 (params)</h3>"
         "<input type='text' id='mqtt-send-data' placeholder='JSON params' value='{\"LedSwitch\":true}'>"
         "<div style='margin-top:6px;display:flex;gap:6px;flex-wrap:wrap'>"
@@ -160,7 +163,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "}"
         "function startRefresh(){if(t)return;t=setInterval(refresh,1000);refresh();}"
         "function stopRefresh(){if(t){clearInterval(t);t=null;}}"
-        "function refresh(){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var a=document.getElementById('val-wd_a');var b=document.getElementById('val-wd_b');var l=document.getElementById('val-led');if(a)a.textContent=j.wd_a||'--';if(b)b.textContent=j.wd_b||'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}}).catch(function(){});}"
+        "function refresh(){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var a=document.getElementById('val-wd_a');var b=document.getElementById('val-wd_b');var l=document.getElementById('val-led');if(a)a.textContent=j.wd_a||'--';if(b)b.textContent=j.wd_b||'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}var box=document.getElementById('msg-lines-box');if(box){var arr=j.msg_lines||[];if(arr.length===0){box.textContent='暂无数据';}else{box.innerHTML='';arr.forEach(function(line){var d=document.createElement('div');d.textContent='› '+line;d.style.marginBottom='2px';box.appendChild(d);});box.scrollTop=box.scrollHeight;}}}).catch(function(){});}"
         "(function(){var h=location.hash.replace('#','');if(h){var b=document.querySelector('.tab-btn[onclick*=\"'+h+'\"]');switchTab(b,h);}})();"
         "function presetData(s){document.getElementById('mqtt-send-data').value=s;}"
         "function presetLed(on){presetData(on?'{\"LedSwitch\":true}':'{\"LedSwitch\":false}');fetch('/led?action='+(on?'on':'off'),{cache:'no-store'});}"
@@ -351,7 +354,7 @@ static esp_err_t wifi_configure_handler(httpd_req_t *req)
 static esp_err_t wifi_clear_handler(httpd_req_t *req)
 {
     wifi_cred_clear();
-    wifi_start_ap("ESP32-C3-Setup", "12345678");
+    wifi_start_ap("ESP32-C3-Setup");
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "success", true);
@@ -373,11 +376,27 @@ static esp_err_t mqtt_data_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "wd_b", mqtt_get_wd_b());
     cJSON_AddBoolToObject(root, "led", led_get());
 
+    char msg_buf[MQTT_RX_MAX_ENTRIES][128];
+    int cnt = mqtt_get_all_msg_lines(msg_buf, MQTT_RX_MAX_ENTRIES);
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < cnt; i++) {
+        cJSON_AddItemToArray(arr, cJSON_CreateString(msg_buf[i]));
+    }
+    cJSON_AddItemToObject(root, "msg_lines", arr);
+
     char *out = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, out, -1);
     free(out);
     cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t err_404_handler(httpd_req_t *req, httpd_err_code_t error)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -440,6 +459,8 @@ void start_webserver(int64_t start_time_ms)
     httpd_register_uri_handler(s_server, &uri_wifi_clr);
     httpd_register_uri_handler(s_server, &uri_mqtt_data);
     httpd_register_uri_handler(s_server, &uri_mqtt_send);
+
+    httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND, err_404_handler);
 
     ESP_LOGI(TAG, "Web server started");
 }
