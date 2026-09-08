@@ -1,0 +1,17 @@
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+*.bin
+*.elf
+*.map
+.vscode/
+.clangd
+.idea/
+.cache/
+*.bin.bak
+CMakePresets.json
+dependencies.lock
+full_partition_dump.bin
+partition_verify.bin
+rom_read.bin
