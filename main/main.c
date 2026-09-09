@@ -53,14 +53,6 @@ void app_main(void)
         sntp_init_and_sync();
         mqtt_init(s_start_time_ms);
         s_services_started = true;
-    } else if (wifi_is_ap_active()) {
-        ESP_LOGI(TAG, "WiFi not connected - AP provisioning mode active");
-        OLED_Clear();
-        OLED_ShowStringSize(0, 0, "AP Mode", OLED_SIZE_16, false);
-        OLED_ShowStringSize(0, 16, "SSID:Setup", OLED_SIZE_16, false);
-        OLED_ShowStringSize(0, 32, "No Password", OLED_SIZE_16, false);
-        OLED_ShowStringSize(0, 48, wifi_get_ip(), OLED_SIZE_16, false);
-        OLED_Update();
     }
 
     start_webserver(s_start_time_ms);
@@ -80,11 +72,6 @@ void app_main(void)
             sntp_init_and_sync();
             mqtt_init(s_start_time_ms);
             s_services_started = true;
-
-            OLED_Clear();
-            OLED_ShowStringSize(0, 0, "WiFi OK!", OLED_SIZE_16, false);
-            OLED_ShowStringSize(0, 16, wifi_get_ip(), OLED_SIZE_16, false);
-            OLED_Update();
         }
     }
 }

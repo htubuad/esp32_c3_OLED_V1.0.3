@@ -4,6 +4,7 @@
 #include "temp_sensor.h"
 #include "version.h"
 #include "oled.h"
+#include "ui_dashboard.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "esp_timer.h"
@@ -501,6 +502,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     strncpy(s_last_payload, p, sizeof(s_last_payload) - 1);
                     s_last_payload[sizeof(s_last_payload) - 1] = '\0';
                     free(p);
+                    ui_notify_new_msg();
                 } else {
                     s_last_payload[0] = '\0';
                 }
