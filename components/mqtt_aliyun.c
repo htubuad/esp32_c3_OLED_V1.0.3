@@ -35,6 +35,7 @@ static const char *TAG = "ALIYUN";
 #define ALIYUN_TOPIC_GET_REPLY   "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/thing/service/property/get_reply"
 #define ALIYUN_TOPIC_REPLY       "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/thing/event/property/post_reply"
 #define ALIYUN_TOPIC_USER        "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/get"
+#define ALIYUN_TOPIC_USER_UPDATE "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/update"
 
 #define MQTT_CONNECT_TIMEOUT_MS  15000
 #define MQTT_RETRY_DELAY_MS      5000
@@ -65,6 +66,11 @@ static char s_password[72];
 
 static char s_wd_a[128] = {0};
 static char s_wd_b[128] = {0};
+
+static int  s_num_val = 0;
+static char s_from_src[64] = {0};
+
+static char s_last_payload[512] = {0};
 
 static char s_msg_lines[MQTT_MSG_MAX_LINES][128] = {0};
 static int  s_msg_count = 0;
@@ -212,6 +218,25 @@ const char *mqtt_get_wd_b(void)
     return s_wd_b[0] ? s_wd_b : "--";
 }
 
+int mqtt_get_num(void) { return s_num_val; }
+
+const char *mqtt_get_from(void)
+{
+    return s_from_src[0] ? s_from_src : "--";
+}
+
+const char *mqtt_get_last_rx_topic(void)
+{
+    if (s_rx_total <= 0) return "";
+    int idx = (s_rx_head - 1 + MQTT_RX_MAX_ENTRIES) % MQTT_RX_MAX_ENTRIES;
+    return s_rx_history[idx].topic;
+}
+
+const char *mqtt_get_last_rx_data(void)
+{
+    return s_last_payload;
+}
+
 int mqtt_get_msg_count(void) { return s_msg_count; }
 
 const char *mqtt_get_msg_line(int idx)
@@ -330,6 +355,17 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     s_wd_b[sizeof(s_wd_b) - 1] = '\0';
                 }
 
+                cJSON *num_item = cJSON_GetObjectItem(params, "num");
+                if (num_item && cJSON_IsNumber(num_item)) {
+                    s_num_val = num_item->valueint;
+                }
+
+                cJSON *from_item = cJSON_GetObjectItem(params, "from");
+                if (from_item && cJSON_IsString(from_item)) {
+                    strncpy(s_from_src, from_item->valuestring, sizeof(s_from_src) - 1);
+                    s_from_src[sizeof(s_from_src) - 1] = '\0';
+                }
+
                 cJSON *child = params->child;
                 s_msg_count = 0;
                 s_msg_idx = 0;
@@ -397,6 +433,16 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             } else {
                 s_msg_count = 0;
                 s_msg_idx = 0;
+
+                cJSON *num_f = cJSON_GetObjectItem(root, "num");
+                if (num_f && cJSON_IsNumber(num_f)) s_num_val = num_f->valueint;
+
+                cJSON *from_f = cJSON_GetObjectItem(root, "from");
+                if (from_f && cJSON_IsString(from_f)) {
+                    strncpy(s_from_src, from_f->valuestring, sizeof(s_from_src) - 1);
+                    s_from_src[sizeof(s_from_src) - 1] = '\0';
+                }
+
                 cJSON *child = root->child;
                 while (child && s_msg_count < MQTT_MSG_MAX_LINES) {
                     char val_str[24];
@@ -439,39 +485,24 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 bool is_cmd = (tlen == (int)strlen(ALIYUN_TOPIC_CMD)) &&
                               (memcmp(topic, ALIYUN_TOPIC_CMD, tlen) == 0);
                 if (is_cmd) {
-                    const char *msg_id = "";
-                    cJSON *id_item = cJSON_GetObjectItem(root, "id");
-                    if (id_item && cJSON_IsString(id_item)) msg_id = id_item->valuestring;
-
-                    int reply_code = 200;
-                    const char *reply_msg = "success";
-
-                    mqtt_send_cmd_reply(msg_id, reply_code, reply_msg);
-
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                    mqtt_publish_status();
                 }
 
                 bool is_get = (tlen == (int)strlen(ALIYUN_TOPIC_GET)) &&
                               (memcmp(topic, ALIYUN_TOPIC_GET, tlen) == 0);
                 if (is_get) {
-                    const char *msg_id = "";
-                    cJSON *id_item = cJSON_GetObjectItem(root, "id");
-                    if (id_item && cJSON_IsString(id_item)) msg_id = id_item->valuestring;
+                }
+            }
 
-                    cJSON *params = cJSON_GetObjectItem(root, "params");
-                    cJSON *data = cJSON_CreateObject();
-
-                    if (params && cJSON_IsArray(params)) {
-                        data = fill_requested_properties(data, params);
-                    } else {
-                        cJSON_Delete(data);
-                        data = build_all_properties();
-                    }
-
-                    ESP_LOGI(TAG, "GET request id=%s params=%s",
-                             msg_id, params ? "array" : "all");
-                    mqtt_send_get_reply(msg_id, 200, "success", data);
+            {
+                cJSON *params = cJSON_GetObjectItem(root, "params");
+                cJSON *payload_src = (params && cJSON_IsObject(params)) ? params : root;
+                char *p = cJSON_PrintUnformatted(payload_src);
+                if (p) {
+                    strncpy(s_last_payload, p, sizeof(s_last_payload) - 1);
+                    s_last_payload[sizeof(s_last_payload) - 1] = '\0';
+                    free(p);
+                } else {
+                    s_last_payload[0] = '\0';
                 }
             }
 
@@ -602,6 +633,8 @@ esp_err_t mqtt_publish_status(void)
 static void mqtt_manager_task(void *arg)
 {
     int retry_count = 0;
+    int temp_tick = 0;
+    float temp_val = 26.1f;
 
     while (1) {
         switch (s_mqtt_state) {
@@ -679,6 +712,14 @@ static void mqtt_manager_task(void *arg)
                 ESP_LOGW(TAG, "MQTT lost, recreate...");
                 s_mqtt_state = MQTT_STATE_ERROR;
                 break;
+            }
+            temp_tick++;
+            if (temp_tick >= 15) {
+                temp_tick = 0;
+                char payload[64];
+                snprintf(payload, sizeof(payload), "{\"temperature\":%.1f}", temp_val);
+                mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, payload, 0);
+                temp_val += 0.1f;
             }
             vTaskDelay(pdMS_TO_TICKS(2000));
             break;
