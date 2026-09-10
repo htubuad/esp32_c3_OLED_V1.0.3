@@ -420,6 +420,8 @@ static esp_err_t mqtt_send_handler(httpd_req_t *req)
     }
     if (!data) data = buf;
 
+    ESP_LOGI("web", "mqtt_send_handler: topic='%s' data='%s'", topic ? topic : "(null)", data ? data : "(null)");
+
     esp_err_t err;
     if (topic && strlen(topic) > 0) {
         if (strcmp(topic, "user_update") == 0) {
@@ -430,6 +432,7 @@ static esp_err_t mqtt_send_handler(httpd_req_t *req)
     } else {
         err = mqtt_publish_aliyun_params(data);
     }
+    ESP_LOGI("web", "mqtt_send_handler: publish err=%s", esp_err_to_name(err));
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "success", err == ESP_OK);
