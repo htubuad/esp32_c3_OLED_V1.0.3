@@ -220,7 +220,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
         s_wifi_connected = false;
-        led_set(false);
+        led_status_mode_set(LED_MODE_BLINK_SLOW);
         memset(s_ip_str, 0, sizeof(s_ip_str));
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         mdns_unregister_sta();
@@ -240,7 +240,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&event->ip_info.ip));
         s_wifi_connected = true;
-        led_set(true);
+        led_status_mode_set(LED_MODE_BREATH);
         s_retry_count = 0;
         mdns_register_sta();
         ESP_LOGI(TAG, "========================================");
@@ -471,7 +471,7 @@ void wifi_start_ap(const char *ap_ssid)
     s_wifi_connected = false;
     memset(s_ip_str, 0, sizeof(s_ip_str));
     xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
-    led_set(false);
+    led_status_mode_set(LED_MODE_OFF);
 
     if (!s_netif_ap) {
         s_netif_ap = esp_netif_create_default_wifi_ap();
@@ -506,7 +506,7 @@ void wifi_start_ap(const char *ap_ssid)
 
     s_ap_active = true;
     s_retry_count = MAX_RETRY;
-    led_set(true);
+    led_status_mode_set(LED_MODE_PATTERN_DOUBLE);
 
     vTaskDelay(pdMS_TO_TICKS(300));
     mdns_register_ap();

@@ -26,6 +26,7 @@ static TaskHandle_t s_ui_task_handle = NULL;
 static char s_last_wifi[24] = {0};
 static char s_last_info[24] = {0};
 static char s_last_mqtt[48] = {0};
+static bool s_was_connected = false;
 
 static void format_time(char *buf, size_t size)
 {
@@ -204,6 +205,19 @@ static void ui_task(void *arg)
 
     while (1) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(300));
+
+        bool connected = wifi_is_connected();
+
+        if (s_was_connected && !connected) {
+            OLED_Clear();
+            s_last_wifi[0] = '\0';
+            s_last_info[0] = '\0';
+            s_last_mqtt[0] = '\0';
+            s_msg_buf[0] = '\0';
+            s_msg_scroll = 0;
+            s_msg_has_content = false;
+        }
+        s_was_connected = connected;
 
         render_wifi_line();
         render_info_line();

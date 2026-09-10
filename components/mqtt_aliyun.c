@@ -127,6 +127,7 @@ static void mqtt_send_cmd_reply(const char *id, int code, const char *message)
     if (!payload) return;
 
     esp_mqtt_client_publish(s_mqtt_client, ALIYUN_TOPIC_CMD_REPLY, payload, 0, 0, 0);
+    led_status_tx_notify();
     ESP_LOGI(TAG, "CMD reply code=%d msg=%s", code, message ? message : "");
     free(payload);
 }
@@ -146,6 +147,7 @@ static void mqtt_send_get_reply(const char *id, int code, const char *message, c
     if (!payload) return;
 
     esp_mqtt_client_publish(s_mqtt_client, ALIYUN_TOPIC_GET_REPLY, payload, 0, 0, 0);
+    led_status_tx_notify();
     ESP_LOGI(TAG, "GET reply: %s", payload);
     free(payload);
 }
@@ -154,7 +156,7 @@ static cJSON *build_all_properties(void)
 {
     cJSON *data = cJSON_CreateObject();
     bool wifi_ok = wifi_is_connected();
-    cJSON_AddBoolToObject(data, "LedSwitch", led_get());
+    cJSON_AddBoolToObject(data, "LedSwitch", led_mqtt_get());
     cJSON_AddNumberToObject(data, "temperature", temp_sensor_get());
     cJSON_AddNumberToObject(data, "WiFiRSSI", wifi_ok ? wifi_get_rssi() : 0);
     cJSON_AddStringToObject(data, "DeviceIP", wifi_ok ? wifi_get_ip() : "");
@@ -176,7 +178,7 @@ static cJSON *fill_requested_properties(cJSON *data, cJSON *params)
         if (!name) { item = item->next; continue; }
 
         if (strcasecmp(name, "LedSwitch") == 0) {
-            cJSON_AddBoolToObject(data, "LedSwitch", led_get());
+            cJSON_AddBoolToObject(data, "LedSwitch", led_mqtt_get());
             matched_any = true;
         } else if (strcasecmp(name, "temperature") == 0) {
             cJSON_AddNumberToObject(data, "temperature", temp_sensor_get());
@@ -307,6 +309,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "Rx topic=%.*s data=%.*s",
                  event->topic_len, event->topic,
                  event->data_len, event->data);
+        led_status_rx_notify();
 
         {
             char topic_buf[MQTT_RX_TOPIC_LEN] = {0};
@@ -417,22 +420,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     s_msg_count++;
                 }
 
-                bool led_on = false;
-                bool has_led = false;
-                cJSON *led = cJSON_GetObjectItem(params, "LedSwitch");
-                if (led) {
-                    led_on = cJSON_IsTrue(led) || (cJSON_IsNumber(led) && led->valueint != 0);
-                    has_led = true;
-                }
-                cJSON *power = cJSON_GetObjectItem(params, "Power");
-                if (power) {
-                    led_on = cJSON_IsTrue(power) || (cJSON_IsNumber(power) && power->valueint != 0);
-                    has_led = true;
-                }
-                if (has_led) {
-                    led_set(led_on);
-                    ESP_LOGI(TAG, "LED %s (cloud cmd)", led_on ? "ON" : "OFF");
-                }
             } else {
                 s_msg_count = 0;
                 s_msg_idx = 0;
@@ -480,6 +467,36 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     child = child->next;
                 }
                 ESP_LOGI(TAG, "Flat JSON parsed, %d msg lines", s_msg_count);
+            }
+
+            {
+                bool led_on = false;
+                bool has_led = false;
+                const char *matched_key = NULL;
+
+                cJSON *scan_src = params ? params : root;
+                const char *led_names[] = {"light", "ledswitch", "led", "power", NULL};
+
+                for (int i = 0; led_names[i] && !has_led; i++) {
+                    cJSON *child = scan_src->child;
+                    while (child) {
+                        if (child->string && strcasecmp(child->string, led_names[i]) == 0) {
+                            led_on = cJSON_IsTrue(child) || (cJSON_IsNumber(child) && child->valueint != 0);
+                            has_led = true;
+                            matched_key = child->string;
+                            break;
+                        }
+                        child = child->next;
+                    }
+                }
+
+                ESP_LOGI(TAG, "LED scan: has_led=%d key=%s on=%d",
+                         has_led, matched_key ? matched_key : "(none)", led_on);
+
+                if (has_led) {
+                    led_mqtt_set(led_on);
+                    ESP_LOGI(TAG, "LED %s via '%s'", led_on ? "ON" : "OFF", matched_key);
+                }
             }
 
             {
@@ -616,7 +633,7 @@ esp_err_t mqtt_publish_status(void)
     cJSON_AddItemToObject(root, "params", params);
 
     bool wifi_ok = wifi_is_connected();
-    cJSON_AddBoolToObject(params, "LedSwitch", led_get());
+    cJSON_AddBoolToObject(params, "LedSwitch", led_mqtt_get());
     cJSON_AddNumberToObject(params, "temperature", temp_sensor_get());
     cJSON_AddNumberToObject(params, "WiFiRSSI", wifi_ok ? wifi_get_rssi() : 0);
     cJSON_AddStringToObject(params, "DeviceIP", wifi_ok ? wifi_get_ip() : "");
@@ -629,6 +646,7 @@ esp_err_t mqtt_publish_status(void)
     if (!payload) return ESP_FAIL;
 
     esp_mqtt_client_publish(s_mqtt_client, ALIYUN_TOPIC_STATUS, payload, 0, 0, 0);
+    led_status_tx_notify();
     ESP_LOGI(TAG, "Post property (id=%s)", id);
     free(payload);
     return ESP_OK;
@@ -772,6 +790,7 @@ esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)
     int rc = esp_mqtt_client_publish(s_mqtt_client, topic, data, len, qos, 0);
     if (rc >= 0) {
         ESP_LOGI(TAG, "TX id=%d topic=%s", rc, topic);
+        led_status_tx_notify();
         tx_history_add(topic, data, rc);
         return ESP_OK;
     } else {
@@ -814,6 +833,7 @@ esp_err_t mqtt_publish_aliyun_params(const char *params_json)
     ESP_LOGI(TAG, "Aliyun post id=%s rc=%d", id, rc);
 
     if (rc >= 0) {
+        led_status_tx_notify();
         tx_history_add(ALIYUN_TOPIC_STATUS, payload, rc);
     }
 
