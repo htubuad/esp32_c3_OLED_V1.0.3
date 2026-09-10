@@ -138,10 +138,6 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<div id='msg-lines-box' style='background:#1e1e2e;color:#cdd6f4;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:13px;min-height:60px;max-height:200px;overflow-y:auto;word-break:break-all;white-space:pre-wrap'>暂无数据</div>"
 
         "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>发送 (params)</h3>"
-        "<select id='mqtt-send-topic' style='width:100%%;padding:8px;margin-bottom:8px;border:1px solid #ccc;border-radius:4px;font-size:13px'>"
-        "<option value='user_update'>自定义 topic (user/update) — 控制端可见</option>"
-        "<option value=''>属性上报 (property/post) — 仅更新设备影子</option>"
-        "</select>"
         "<textarea id='mqtt-send-data' rows='3' placeholder='JSON params' style='width:100%%;box-sizing:border-box;font-family:monospace;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:4px;resize:vertical'>{\"LedSwitch\":true,\"temperature\":25.0}</textarea>"
         "<div style='margin-top:12px'>"
         "<button class='btn btn-on' onclick='mqttSend()'>发送到阿里云</button>"
@@ -164,15 +160,14 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "function stopRefresh(){if(t){clearInterval(t);t=null;}}"
         "function refresh(){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var t=document.getElementById('val-temp');var l=document.getElementById('val-led');if(t)t.textContent=j.temp!=null?j.temp.toFixed(1)+' C':'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}var box=document.getElementById('msg-lines-box');if(box){var h=j.history||[];var html='';if(!h.length){html='暂无数据';}else{var e=h[0];var tp=(e.topic||'').split('/');var name=tp[tp.length-1]||'topic';html+='<div style=\"background:#313244;border-radius:4px;padding:6px 8px;margin-bottom:6px\"><div style=\"color:#89b4fa;font-weight:700;font-size:14px\">'+name+'</div><div style=\"color:#f9e2af;word-break:break-all\">'+(e.data||'')+'</div></div>';for(var i=1;i<h.length;i++){var x=h[i];var tp2=(x.topic||'').split('/');var n2=tp2[tp2.length-1]||'topic';html+='<div style=\"padding:2px 0;color:#6c7086;font-size:12px;border-bottom:1px dashed #45475a\"><span>'+n2+'</span> <span style=\"color:#a6adc8\">'+(x.data||'')+'</span></div>';}}var curSig=h.length?(h[0].topic||'')+'|'+(h[0].data||''):'';if(curSig!==_lastSig){box.innerHTML=html;box.scrollTop=0;}_lastSig=curSig;}}).catch(function(){});}"
         "(function(){var h=location.hash.replace('#','');if(h){var b=document.querySelector('.tab-btn[onclick*=\"'+h+'\"]');switchTab(b,h);}})();"
-        "function resetSendData(){document.getElementById('mqtt-send-data').value='{\"LedSwitch\":true,\"temperature\":25.0}';document.getElementById('mqtt-send-topic').value='user_update';}"
+        "function resetSendData(){document.getElementById('mqtt-send-data').value='{\"LedSwitch\":true,\"temperature\":25.0}';}"
         "async function mqttSend(){"
         "var d=document.getElementById('mqtt-send-data').value.trim();"
-        "var t=document.getElementById('mqtt-send-topic').value;"
         "var m=document.getElementById('mqtt-send-msg');"
         "if(!d){m.className='message error';m.textContent='请输入数据';return;}"
         "m.className='message';m.textContent='发送中...';m.style.display='block';"
         "try{"
-        "var r=await fetch('/api/mqtt/send',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(d)+'&topic='+encodeURIComponent(t)});"
+        "var r=await fetch('/api/mqtt/send',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(d)});"
         "var j=await r.json();"
         "if(j.success){m.className='message success';m.textContent='发送成功';}"
         "else{m.className='message error';m.textContent='失败: '+j.error;}"
@@ -429,31 +424,12 @@ static esp_err_t mqtt_send_handler(httpd_req_t *req)
     buf[n] = '\0';
 
     char *data = NULL;
-    char *topic = NULL;
-    char *kv = strtok(buf, "&");
-    while (kv) {
-        if (strncmp(kv, "data=", 5) == 0) data = kv + 5;
-        else if (strncmp(kv, "topic=", 6) == 0) topic = kv + 6;
-        kv = strtok(NULL, "&");
-    }
-    if (!data) data = buf;
+    if (strncmp(buf, "data=", 5) == 0) data = buf + 5;
+    else data = buf;
 
     if (data) url_decode(data);
-    if (topic) url_decode(topic);
 
-    ESP_LOGI("web", "mqtt_send_handler: topic='%s' data='%s'", topic ? topic : "(null)", data ? data : "(null)");
-
-    esp_err_t err;
-    if (topic && strlen(topic) > 0) {
-        if (strcmp(topic, "user_update") == 0) {
-            err = mqtt_publish_user_update(data);
-        } else {
-            err = mqtt_publish_custom(topic, data, 0);
-        }
-    } else {
-        err = mqtt_publish_aliyun_params(data);
-    }
-    ESP_LOGI("web", "mqtt_send_handler: publish err=%s", esp_err_to_name(err));
+    esp_err_t err = mqtt_publish_user_update(data);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "success", err == ESP_OK);
