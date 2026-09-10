@@ -131,23 +131,14 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "</div>"
 
         "<div id='tab-mqtt' class='tab'>"
-        "<div class='row'><span class='label'>wd_a</span><span class='val' id='val-wd_a'>--</span></div>"
-        "<div class='row'><span class='label'>wd_b</span><span class='val' id='val-wd_b'>--</span></div>"
+        "<div class='row'><span class='label'>温度</span><span class='val' id='val-temp'>--</span></div>"
         "<div class='row'><span class='label'>LED</span><span class='val' id='val-led'>--</span></div>"
-        "<div class='row'><span class='label'>num</span><span class='val' id='val-num'>--</span></div>"
-        "<div class='row'><span class='label'>from</span><span class='val' id='val-from'>--</span></div>"
 
         "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>最新接收数据</h3>"
         "<div id='msg-lines-box' style='background:#1e1e2e;color:#cdd6f4;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:13px;min-height:60px;max-height:200px;overflow-y:auto;word-break:break-all;white-space:pre-wrap'>暂无数据</div>"
 
         "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>发送 (params)</h3>"
-        "<input type='text' id='mqtt-send-data' placeholder='JSON params' value='{\"num\":999,\"from\":\"phone\"}'>"
-        "<div style='margin-top:6px;display:flex;gap:6px;flex-wrap:wrap'>"
-        "<button class='btn scan-btn' onclick='presetLed(true)'>开灯</button>"
-        "<button class='btn scan-btn' onclick='presetLed(false)'>关灯</button>"
-        "<button class='btn scan-btn' onclick='presetData(\"{\\\"num\\\":999,\\\"from\\\":\\\"phone\\\"}\")'>phone</button>"
-        "<button class='btn scan-btn' onclick='presetData(\"{\\\"num\\\":888,\\\"from\\\":\\\"web\\\"}\")'>web</button>"
-        "</div>"
+        "<input type='text' id='mqtt-send-data' placeholder='JSON params' value='{\"LedSwitch\":true}'>"
         "<div style='margin-top:12px'>"
         "<button class='btn btn-on' onclick='mqttSend()'>发送到阿里云</button>"
         "</div>"
@@ -166,10 +157,8 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "}"
         "function startRefresh(){if(t)return;t=setInterval(refresh,1000);refresh();}"
         "function stopRefresh(){if(t){clearInterval(t);t=null;}}"
-        "function refresh(){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var a=document.getElementById('val-wd_a');var b=document.getElementById('val-wd_b');var l=document.getElementById('val-led');var n=document.getElementById('val-num');var f=document.getElementById('val-from');if(a)a.textContent=j.wd_a||'--';if(b)b.textContent=j.wd_b||'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}if(n)n.textContent=j.num!=null?j.num:'--';if(f)f.textContent=j.from||'--';var box=document.getElementById('msg-lines-box');if(box){box.textContent=j.last_data||'暂无数据';box.scrollTop=box.scrollHeight;}}).catch(function(){});}"
+        "function refresh(){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var t=document.getElementById('val-temp');var l=document.getElementById('val-led');if(t)t.textContent=j.temp!=null?j.temp.toFixed(1)+' C':'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}var box=document.getElementById('msg-lines-box');if(box){box.textContent=j.last_data||'暂无数据';box.scrollTop=box.scrollHeight;}}).catch(function(){});}"
         "(function(){var h=location.hash.replace('#','');if(h){var b=document.querySelector('.tab-btn[onclick*=\"'+h+'\"]');switchTab(b,h);}})();"
-        "function presetData(s){document.getElementById('mqtt-send-data').value=s;}"
-        "function presetLed(on){presetData(on?'{\"LedSwitch\":true}':'{\"LedSwitch\":false}');fetch('/led?action='+(on?'on':'off'),{cache:'no-store'});}"
         "async function mqttSend(){"
         "var d=document.getElementById('mqtt-send-data').value.trim();"
         "var m=document.getElementById('mqtt-send-msg');"
@@ -375,11 +364,8 @@ static esp_err_t wifi_clear_handler(httpd_req_t *req)
 static esp_err_t mqtt_data_handler(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "wd_a", mqtt_get_wd_a());
-    cJSON_AddStringToObject(root, "wd_b", mqtt_get_wd_b());
+    cJSON_AddNumberToObject(root, "temp", temp_sensor_get());
     cJSON_AddBoolToObject(root, "led", led_get());
-    cJSON_AddNumberToObject(root, "num", mqtt_get_num());
-    cJSON_AddStringToObject(root, "from", mqtt_get_from());
     cJSON_AddStringToObject(root, "last_topic", mqtt_get_last_rx_topic());
     cJSON_AddStringToObject(root, "last_data", mqtt_get_last_rx_data());
 
