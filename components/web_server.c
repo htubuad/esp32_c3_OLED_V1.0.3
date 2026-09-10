@@ -138,7 +138,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<div id='msg-lines-box' style='background:#1e1e2e;color:#cdd6f4;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:13px;min-height:60px;max-height:200px;overflow-y:auto;word-break:break-all;white-space:pre-wrap'>暂无数据</div>"
 
         "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>发送 (params)</h3>"
-        "<input type='text' id='mqtt-send-data' placeholder='JSON params' value=''>"
+        "<input type='text' id='mqtt-send-data' placeholder='JSON params' value='{\"LedSwitch\":true,\"temperature\":25.0}'>"
         "<div style='margin-top:12px'>"
         "<button class='btn btn-on' onclick='mqttSend()'>发送到阿里云</button>"
         "</div>"
