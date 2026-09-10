@@ -780,6 +780,11 @@ esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)
     }
 }
 
+esp_err_t mqtt_publish_user_update(const char *data)
+{
+    return mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, data, 0);
+}
+
 esp_err_t mqtt_publish_aliyun_params(const char *params_json)
 {
     if (!s_mqtt_connected || !s_mqtt_client) return ESP_ERR_INVALID_STATE;

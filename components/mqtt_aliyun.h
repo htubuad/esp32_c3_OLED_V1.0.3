@@ -42,6 +42,7 @@ int mqtt_get_all_msg_lines(char out[][128], int max_lines);
 
 esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos);
 esp_err_t mqtt_publish_aliyun_params(const char *params_json);
+esp_err_t mqtt_publish_user_update(const char *data);
 int mqtt_get_rx_entries(mqtt_rx_entry_t *out, int max_count);
 int mqtt_get_tx_entries(mqtt_tx_entry_t *out, int max_count);
 void mqtt_clear_rx_history(void);
