@@ -403,6 +403,24 @@ static esp_err_t err_404_handler(httpd_req_t *req, httpd_err_code_t error)
     return ESP_OK;
 }
 
+static void url_decode(char *s)
+{
+    char *r = s;
+    while (*s) {
+        if (*s == '%' && s[1] && s[2]) {
+            char hex[3] = {s[1], s[2], 0};
+            *r++ = (char)strtol(hex, NULL, 16);
+            s += 3;
+        } else if (*s == '+') {
+            *r++ = ' ';
+            s++;
+        } else {
+            *r++ = *s++;
+        }
+    }
+    *r = 0;
+}
+
 static esp_err_t mqtt_send_handler(httpd_req_t *req)
 {
     char buf[512];
@@ -419,6 +437,9 @@ static esp_err_t mqtt_send_handler(httpd_req_t *req)
         kv = strtok(NULL, "&");
     }
     if (!data) data = buf;
+
+    if (data) url_decode(data);
+    if (topic) url_decode(topic);
 
     ESP_LOGI("web", "mqtt_send_handler: topic='%s' data='%s'", topic ? topic : "(null)", data ? data : "(null)");
 
