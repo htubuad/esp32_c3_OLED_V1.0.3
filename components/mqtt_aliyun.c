@@ -315,7 +315,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             int dlen = event->data_len < MQTT_RX_DATA_LEN - 1 ? event->data_len : MQTT_RX_DATA_LEN - 1;
             memcpy(topic_buf, event->topic, tlen);
             memcpy(data_buf, event->data, dlen);
-            rx_history_add(topic_buf, data_buf);
+            if (!strstr(topic_buf, "_reply")) {
+                rx_history_add(topic_buf, data_buf);
+            }
         }
 
         {
