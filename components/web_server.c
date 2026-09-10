@@ -157,7 +157,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "}"
         "function startRefresh(){if(t)return;t=setInterval(refresh,1000);refresh();}"
         "function stopRefresh(){if(t){clearInterval(t);t=null;}}"
-        "function refresh(){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var t=document.getElementById('val-temp');var l=document.getElementById('val-led');if(t)t.textContent=j.temp!=null?j.temp.toFixed(1)+' C':'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}var box=document.getElementById('msg-lines-box');if(box){box.textContent=j.last_data||'暂无数据';box.scrollTop=box.scrollHeight;}}).catch(function(){});}"
+        "function refresh(){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var t=document.getElementById('val-temp');var l=document.getElementById('val-led');if(t)t.textContent=j.temp!=null?j.temp.toFixed(1)+' C':'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}var box=document.getElementById('msg-lines-box');if(box){var h=j.history||[];var html='';if(!h.length){html='暂无数据';}else{for(var i=0;i<h.length;i++){var e=h[i];var tp=(e.topic||'').split('/');var name=tp[tp.length-1]||'topic';html+='<div style=\"padding:4px 0;border-bottom:1px dashed #45475a\"><span style=\"color:#89b4fa\">'+name+'</span> <span style=\"color:#f9e2af\">'+(e.data||'')+'</span></div>';}}box.innerHTML=html;box.scrollTop=box.scrollHeight;}}).catch(function(){});}"
         "(function(){var h=location.hash.replace('#','');if(h){var b=document.querySelector('.tab-btn[onclick*=\"'+h+'\"]');switchTab(b,h);}})();"
         "async function mqttSend(){"
         "var d=document.getElementById('mqtt-send-data').value.trim();"
@@ -368,6 +368,17 @@ static esp_err_t mqtt_data_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "led", led_get());
     cJSON_AddStringToObject(root, "last_topic", mqtt_get_last_rx_topic());
     cJSON_AddStringToObject(root, "last_data", mqtt_get_last_rx_data());
+
+    mqtt_rx_entry_t history[5];
+    int hcnt = mqtt_get_rx_entries(history, 5);
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < hcnt; i++) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "topic", history[i].topic);
+        cJSON_AddStringToObject(item, "data", history[i].data);
+        cJSON_AddItemToArray(arr, item);
+    }
+    cJSON_AddItemToObject(root, "history", arr);
 
     char *out = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
