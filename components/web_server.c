@@ -138,7 +138,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<div id='msg-lines-box' style='background:#1e1e2e;color:#cdd6f4;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:13px;min-height:60px;max-height:200px;overflow-y:auto;word-break:break-all;white-space:pre-wrap'>暂无数据</div>"
 
         "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>发送 (params)</h3>"
-        "<textarea id='mqtt-send-data' rows='3' placeholder='JSON params' style='width:100%;box-sizing:border-box;font-family:monospace;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:4px;resize:vertical'>{\"LedSwitch\":true,\"temperature\":25.0}</textarea>"
+        "<textarea id='mqtt-send-data' rows='3' placeholder='JSON params' style='width:100%%;box-sizing:border-box;font-family:monospace;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:4px;resize:vertical'>{\"LedSwitch\":true,\"temperature\":25.0}</textarea>"
         "<div style='margin-top:12px'>"
         "<button class='btn btn-on' onclick='mqttSend()'>发送到阿里云</button>"
         "<button class='btn' style='background:#888' onclick='resetSendData()'>恢复默认</button>"
