@@ -7,6 +7,7 @@
 #include "version.h"
 
 #define DEVICE_ID           "001_" APP_VERSION
+#define DEVICE_ID_PREFIX    "001"
 
 #define MQTT_RX_MAX_ENTRIES 32
 #define MQTT_RX_TOPIC_LEN   128

@@ -56,7 +56,7 @@ void switch1_set(bool on)
     s_sw1_on = on;
     gpio_set_level(SWITCH1_GPIO, on ? 1 : 0);
     nvs_save_sw1(on);
-    ESP_LOGI(TAG, "switch1 -> %d", on);
+    ESP_LOGI(TAG, "switch1(light) -> %d", on);
 }
 
 bool switch1_get(void)
