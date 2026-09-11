@@ -103,7 +103,6 @@ static char *mqtt_build_tx_frame(void)
 
     if (n < 0 || n >= 256) { free(out); return NULL; }
 
-    ESP_LOGI(TAG, "TX frame: %s", out);
     return out;
 }
 
@@ -230,7 +229,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGW(TAG, "Disconnected");
         break;
     case MQTT_EVENT_DATA: {
-        ESP_LOGI(TAG, "Rx data=%.*s", event->data_len, event->data);
         led_status_rx_notify();
 
         char topic_buf[MQTT_RX_TOPIC_LEN] = {0};
@@ -262,14 +260,17 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             if (strncmp(id_str, DEVICE_ID_PREFIX, strlen(DEVICE_ID_PREFIX)) == 0) {
                 if (strcmp(dir_str, "C>D") == 0) {
-                    ESP_LOGI(TAG, "RX frame match");
+                    ESP_LOGI(TAG, "RX  %s", data_buf);
 
+                    if (j_switch && cJSON_IsNumber(j_switch)) {
+                        sw0_set((j_switch->valueint & 1) != 0);
+                        sw_bit1_set((j_switch->valueint & 2) != 0);
+                    }
                     if (j_light && cJSON_IsNumber(j_light)) {
                         switch1_set(j_light->valueint != 0);
-                        ESP_LOGI(TAG, "light(GPIO12) -> %d", j_light->valueint);
                     }
                     if (j_power && cJSON_IsNumber(j_power)) {
-                        ESP_LOGI(TAG, "power=%d", j_power->valueint);
+                        power_set(j_power->valueint != 0);
                     }
                     if (j_set1 && cJSON_IsNumber(j_set1)) {
                         s_set_a = (float)j_set1->valuedouble;
@@ -294,23 +295,27 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         child = child->next;
                     }
 
+                    vTaskDelay(pdMS_TO_TICKS(5));
+
                     {
                         float ack_temp = roundf(temp_sensor_get() * 10.0f) / 10.0f;
                         int   ack_rssi = wifi_is_connected() ? wifi_get_rssi() : -127;
+                        uint8_t ack_switches = 0;
+                        if (sw0_read())         ack_switches |= 1;
+                        if (sw_bit1_read())     ack_switches |= 2;
+                        bool ack_power = power_read();
                         char ack_buf[320];
                         int n = snprintf(ack_buf, sizeof(ack_buf),
                             "{\"DeviceID\":\"%s\",\"Dir\":\"ACK\",\"Temp\":%.1f,\"RSSI\":%d,"
-                            "\"Switches\":%d,\"Field1\":%.2f,\"Field2\":%.2f,"
+                            "\"Switches\":%d,\"power\":%d,\"Field1\":%.2f,\"Field2\":%.2f,"
                             "\"Set1\":%.2f,\"Set2\":%.2f}",
-                            DEVICE_ID, ack_temp, ack_rssi, switch1_get() ? 1 : 0,
+                            DEVICE_ID, ack_temp, ack_rssi, ack_switches, ack_power ? 1 : 0,
                             s_field_a, s_field_b, s_set_a, s_set_b);
                         if (n > 0 && n < (int)sizeof(ack_buf)) {
-                            ESP_LOGI(TAG, "RX ack: %s", ack_buf);
                             mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, ack_buf, 0);
                         }
                     }
                 } else if (strcmp(dir_str, "D>C") == 0) {
-                    ESP_LOGI(TAG, "TX frame echoed, ignoring");
                 }
             } else {
                 ESP_LOGW(TAG, "Device ID mismatch: got '%s' expect prefix '%s'", id_str, DEVICE_ID_PREFIX);
@@ -553,7 +558,7 @@ esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)
     int len = strlen(data);
     int rc = esp_mqtt_client_publish(s_mqtt_client, topic, data, len, qos, 0);
     if (rc >= 0) {
-        ESP_LOGI(TAG, "TX id=%d topic=%s", rc, topic);
+        ESP_LOGI(TAG, "TX id=%d %s", rc, data);
         led_status_tx_notify();
         tx_history_add(topic, data, rc);
         return ESP_OK;
