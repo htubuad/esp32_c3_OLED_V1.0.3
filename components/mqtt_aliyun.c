@@ -94,14 +94,22 @@ static char *mqtt_build_tx_frame(void)
     float temp = roundf(temp_sensor_get() * 10.0f) / 10.0f;
     int   rssi = wifi_is_connected() ? wifi_get_rssi() : -127;
 
-    char *out = (char *)malloc(256);
+    uint8_t switches = 0;
+    if (sw0_get())       switches |= 1;
+    if (sw_bit1_get())   switches |= 2;
+
+    char *out = (char *)malloc(320);
     if (!out) return NULL;
 
-    int n = snprintf(out, 256,
-        "{\"DeviceID\":\"%s\",\"Dir\":\"D>C\",\"Temp\":%.1f,\"RSSI\":%d,\"Switches\":%d,\"Field1\":%.2f,\"Field2\":%.2f}",
-        DEVICE_ID, temp, rssi, switch1_get() ? 1 : 0, s_field_a, s_field_b);
+    int n = snprintf(out, 320,
+        "{\"DeviceID\":\"%s\",\"Dir\":\"D>C\",\"Temp\":%.1f,\"RSSI\":%d,"
+        "\"Switches\":%d,\"light\":%d,\"power\":%d,"
+        "\"Field1\":%.2f,\"Field2\":%.2f}",
+        DEVICE_ID, temp, rssi, switches,
+        switch1_get() ? 1 : 0, power_get() ? 1 : 0,
+        s_field_a, s_field_b);
 
-    if (n < 0 || n >= 256) { free(out); return NULL; }
+    if (n < 0 || n >= 320) { free(out); return NULL; }
 
     return out;
 }
@@ -250,6 +258,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             cJSON *j_switch = cJSON_GetObjectItemCaseSensitive(root, "Switches");
             cJSON *j_light  = cJSON_GetObjectItemCaseSensitive(root, "light");
             cJSON *j_power  = cJSON_GetObjectItemCaseSensitive(root, "power");
+            cJSON *j_field1  = cJSON_GetObjectItemCaseSensitive(root, "Field1");
+            cJSON *j_field2  = cJSON_GetObjectItemCaseSensitive(root, "Field2");
             cJSON *j_set1   = cJSON_GetObjectItemCaseSensitive(root, "Set1");
             if (!j_set1) j_set1 = cJSON_GetObjectItemCaseSensitive(root, "SetValue1");
             cJSON *j_set2   = cJSON_GetObjectItemCaseSensitive(root, "Set2");
@@ -272,12 +282,33 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     if (j_power && cJSON_IsNumber(j_power)) {
                         power_set(j_power->valueint != 0);
                     }
+                    int ack_switches_val = (j_switch && cJSON_IsNumber(j_switch)) ? j_switch->valueint : -1;
+                    int ack_light_val    = (j_light  && cJSON_IsNumber(j_light))  ? j_light->valueint  : -1;
+                    int ack_power_val    = (j_power  && cJSON_IsNumber(j_power))  ? j_power->valueint  : -1;
+                    float ack_set1_val = 0; bool ack_set1_ok = false;
+                    float ack_set2_val = 0; bool ack_set2_ok = false;
+                    float ack_field1_val = 0; bool ack_field1_ok = false;
+                    float ack_field2_val = 0; bool ack_field2_ok = false;
+                    if (j_field1 && cJSON_IsNumber(j_field1)) {
+                        ack_field1_val = (float)j_field1->valuedouble;
+                        s_field_a = ack_field1_val;
+                        ack_field1_ok = true;
+                    }
+                    if (j_field2 && cJSON_IsNumber(j_field2)) {
+                        ack_field2_val = (float)j_field2->valuedouble;
+                        s_field_b = ack_field2_val;
+                        ack_field2_ok = true;
+                    }
                     if (j_set1 && cJSON_IsNumber(j_set1)) {
-                        s_set_a = (float)j_set1->valuedouble;
+                        ack_set1_val = (float)j_set1->valuedouble;
+                        s_set_a = ack_set1_val;
                         snprintf(s_wd_b, sizeof(s_wd_b), "%.2f", s_set_a);
+                        ack_set1_ok = true;
                     }
                     if (j_set2 && cJSON_IsNumber(j_set2)) {
-                        s_set_b = (float)j_set2->valuedouble;
+                        ack_set2_val = (float)j_set2->valuedouble;
+                        s_set_b = ack_set2_val;
+                        ack_set2_ok = true;
                     }
 
                     s_msg_count = 0;
@@ -300,17 +331,25 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     {
                         float ack_temp = roundf(temp_sensor_get() * 10.0f) / 10.0f;
                         int   ack_rssi = wifi_is_connected() ? wifi_get_rssi() : -127;
-                        uint8_t ack_switches = 0;
-                        if (sw0_read())         ack_switches |= 1;
-                        if (sw_bit1_read())     ack_switches |= 2;
-                        bool ack_power = power_read();
-                        char ack_buf[320];
+                        char ack_buf[384];
                         int n = snprintf(ack_buf, sizeof(ack_buf),
-                            "{\"DeviceID\":\"%s\",\"Dir\":\"ACK\",\"Temp\":%.1f,\"RSSI\":%d,"
-                            "\"Switches\":%d,\"power\":%d,\"Field1\":%.2f,\"Field2\":%.2f,"
-                            "\"Set1\":%.2f,\"Set2\":%.2f}",
-                            DEVICE_ID, ack_temp, ack_rssi, ack_switches, ack_power ? 1 : 0,
-                            s_field_a, s_field_b, s_set_a, s_set_b);
+                            "{\"DeviceID\":\"%s\",\"Dir\":\"ACK\",\"Temp\":%.1f,\"RSSI\":%d",
+                            DEVICE_ID, ack_temp, ack_rssi);
+                        if (ack_switches_val >= 0) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
+                            ",\"Switches\":%d", ack_switches_val);
+                        if (ack_light_val >= 0) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
+                            ",\"light\":%d", ack_light_val);
+                        if (ack_power_val >= 0) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
+                            ",\"power\":%d", ack_power_val);
+                        if (ack_field1_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
+                            ",\"Field1\":%.2f", ack_field1_val);
+                        if (ack_field2_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
+                            ",\"Field2\":%.2f", ack_field2_val);
+                        if (ack_set1_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
+                            ",\"Set1\":%.2f", ack_set1_val);
+                        if (ack_set2_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
+                            ",\"Set2\":%.2f", ack_set2_val);
+                        n += snprintf(ack_buf + n, sizeof(ack_buf) - n, "}");
                         if (n > 0 && n < (int)sizeof(ack_buf)) {
                             mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, ack_buf, 0);
                         }
