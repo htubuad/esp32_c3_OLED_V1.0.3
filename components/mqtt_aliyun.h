@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "version.h"
+
+#define DEVICE_ID           "001_" APP_VERSION
 
 #define MQTT_RX_MAX_ENTRIES 32
 #define MQTT_RX_TOPIC_LEN   128
@@ -26,7 +29,6 @@ typedef struct {
 } mqtt_tx_entry_t;
 
 bool mqtt_is_connected(void);
-esp_err_t mqtt_publish_status(void);
 void mqtt_init(int64_t start_time_ms);
 const char *mqtt_get_wd_a(void);
 const char *mqtt_get_wd_b(void);

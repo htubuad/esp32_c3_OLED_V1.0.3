@@ -8,6 +8,7 @@
 #include "esp_heap_caps.h"
 #include "driver/gpio.h"
 #include "version.h"
+#include "switch.h"
 #include "led.h"
 #include "temp_sensor.h"
 #include "wifi_manager.h"
@@ -37,6 +38,7 @@ void app_main(void)
 
     s_start_time_ms = esp_timer_get_time() / 1000;
 
+    switch_init();
     led_init();
     OLED_Init();
     OLED_Clear();

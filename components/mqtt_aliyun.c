@@ -1,5 +1,6 @@
 #include "mqtt_aliyun.h"
 #include "wifi_manager.h"
+#include "switch.h"
 #include "led.h"
 #include "temp_sensor.h"
 #include "version.h"
@@ -14,6 +15,7 @@
 #include "freertos/semphr.h"
 #include "cJSON.h"
 #include "mbedtls/md.h"
+#include <math.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
@@ -29,12 +31,6 @@ static const char *TAG = "ALIYUN";
 #define ALIYUN_BROKER_URI    "mqtt://" ALIYUN_BROKER_HOST ":1883"
 #define ALIYUN_USERNAME      ALIYUN_DEVICE_NAME "&" ALIYUN_PRODUCT_KEY
 
-#define ALIYUN_TOPIC_STATUS      "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/thing/event/property/post"
-#define ALIYUN_TOPIC_CMD         "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/thing/service/property/set"
-#define ALIYUN_TOPIC_CMD_REPLY   "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/thing/service/property/set_reply"
-#define ALIYUN_TOPIC_GET         "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/thing/service/property/get"
-#define ALIYUN_TOPIC_GET_REPLY   "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/thing/service/property/get_reply"
-#define ALIYUN_TOPIC_REPLY       "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/thing/event/property/post_reply"
 #define ALIYUN_TOPIC_USER        "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/get"
 #define ALIYUN_TOPIC_USER_UPDATE "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/update"
 
@@ -86,6 +82,29 @@ static int s_tx_head = 0;
 static int s_tx_total = 0;
 static int s_tx_msg_id = 0;
 
+static float  s_field_a = 0.0f;
+static float  s_field_b = 0.0f;
+static float  s_set_a   = 0.0f;
+static float  s_set_b   = 0.0f;
+
+static char *mqtt_build_tx_frame(void)
+{
+    float temp = roundf(temp_sensor_get() * 10.0f) / 10.0f;
+    int   rssi = wifi_is_connected() ? wifi_get_rssi() : -127;
+
+    char *out = (char *)malloc(256);
+    if (!out) return NULL;
+
+    int n = snprintf(out, 256,
+        "{\"DeviceID\":\"%s\",\"Flag\":\"T\",\"Temp\":%.1f,\"RSSI\":%d,\"Switch\":%d,\"Field1\":%.2f,\"Field2\":%.2f}",
+        DEVICE_ID, temp, rssi, switch1_get() ? 1 : 0, s_field_a, s_field_b);
+
+    if (n < 0 || n >= 256) { free(out); return NULL; }
+
+    ESP_LOGI(TAG, "TX frame: %s", out);
+    return out;
+}
+
 static void rx_history_add(const char *topic, const char *data)
 {
     mqtt_rx_entry_t *e = &s_rx_history[s_rx_head];
@@ -111,102 +130,6 @@ static void tx_history_add(const char *topic, const char *data, int msg_id)
     e->used = true;
     s_tx_head = (s_tx_head + 1) % MQTT_TX_MAX_ENTRIES;
     if (s_tx_total < MQTT_TX_MAX_ENTRIES) s_tx_total++;
-}
-
-static void mqtt_send_cmd_reply(const char *id, int code, const char *message)
-{
-    if (!s_mqtt_connected || !s_mqtt_client) return;
-
-    cJSON *root = cJSON_CreateObject();
-    if (id && id[0]) cJSON_AddStringToObject(root, "id", id);
-    cJSON_AddNumberToObject(root, "code", code);
-    cJSON_AddStringToObject(root, "message", message ? message : "");
-
-    char *payload = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!payload) return;
-
-    esp_mqtt_client_publish(s_mqtt_client, ALIYUN_TOPIC_CMD_REPLY, payload, 0, 0, 0);
-    led_status_tx_notify();
-    ESP_LOGI(TAG, "CMD reply code=%d msg=%s", code, message ? message : "");
-    free(payload);
-}
-
-static void mqtt_send_get_reply(const char *id, int code, const char *message, cJSON *data)
-{
-    if (!s_mqtt_connected || !s_mqtt_client) return;
-
-    cJSON *root = cJSON_CreateObject();
-    if (id && id[0]) cJSON_AddStringToObject(root, "id", id);
-    cJSON_AddNumberToObject(root, "code", code);
-    cJSON_AddStringToObject(root, "message", message ? message : "");
-    if (data) cJSON_AddItemToObject(root, "data", data);
-
-    char *payload = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!payload) return;
-
-    esp_mqtt_client_publish(s_mqtt_client, ALIYUN_TOPIC_GET_REPLY, payload, 0, 0, 0);
-    led_status_tx_notify();
-    ESP_LOGI(TAG, "GET reply: %s", payload);
-    free(payload);
-}
-
-static cJSON *build_all_properties(void)
-{
-    cJSON *data = cJSON_CreateObject();
-    bool wifi_ok = wifi_is_connected();
-    cJSON_AddBoolToObject(data, "LedSwitch", led_mqtt_get());
-    cJSON_AddNumberToObject(data, "temperature", temp_sensor_get());
-    cJSON_AddNumberToObject(data, "WiFiRSSI", wifi_ok ? wifi_get_rssi() : 0);
-    cJSON_AddStringToObject(data, "DeviceIP", wifi_ok ? wifi_get_ip() : "");
-    cJSON_AddStringToObject(data, "FirmwareVersion", APP_VERSION);
-    cJSON_AddNumberToObject(data, "UptimeMs", (double)(esp_timer_get_time() / 1000 - s_start_time_ms));
-    cJSON_AddNumberToObject(data, "FreeHeap", (double)heap_caps_get_free_size(MALLOC_CAP_8BIT));
-    return data;
-}
-
-static cJSON *fill_requested_properties(cJSON *data, cJSON *params)
-{
-    if (!params || !cJSON_IsArray(params)) return data;
-
-    bool wifi_ok = wifi_is_connected();
-    bool matched_any = false;
-    cJSON *item = params->child;
-    while (item) {
-        const char *name = item->valuestring;
-        if (!name) { item = item->next; continue; }
-
-        if (strcasecmp(name, "LedSwitch") == 0) {
-            cJSON_AddBoolToObject(data, "LedSwitch", led_mqtt_get());
-            matched_any = true;
-        } else if (strcasecmp(name, "temperature") == 0) {
-            cJSON_AddNumberToObject(data, "temperature", temp_sensor_get());
-            matched_any = true;
-        } else if (strcasecmp(name, "WiFiRSSI") == 0) {
-            cJSON_AddNumberToObject(data, "WiFiRSSI", wifi_ok ? wifi_get_rssi() : 0);
-            matched_any = true;
-        } else if (strcasecmp(name, "DeviceIP") == 0) {
-            cJSON_AddStringToObject(data, "DeviceIP", wifi_ok ? wifi_get_ip() : "");
-            matched_any = true;
-        } else if (strcasecmp(name, "FirmwareVersion") == 0) {
-            cJSON_AddStringToObject(data, "FirmwareVersion", APP_VERSION);
-            matched_any = true;
-        } else if (strcasecmp(name, "UptimeMs") == 0) {
-            cJSON_AddNumberToObject(data, "UptimeMs", (double)(esp_timer_get_time() / 1000 - s_start_time_ms));
-            matched_any = true;
-        } else if (strcasecmp(name, "FreeHeap") == 0) {
-            cJSON_AddNumberToObject(data, "FreeHeap", (double)heap_caps_get_free_size(MALLOC_CAP_8BIT));
-            matched_any = true;
-        }
-        item = item->next;
-    }
-
-    if (!matched_any) {
-        cJSON_Delete(data);
-        return build_all_properties();
-    }
-    return data;
 }
 
 bool mqtt_is_connected(void) { return s_mqtt_connected; }
@@ -292,244 +215,111 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     case MQTT_EVENT_CONNECTED:
         s_mqtt_connected = true;
         s_mqtt_state = MQTT_STATE_CONNECTED;
+        led_notify_mqtt(true);
         ESP_LOGI(TAG, "Connected!");
-        esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_CMD, 0);
-        esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_GET, 0);
-        esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_REPLY, 0);
         esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_USER, 0);
-        ESP_LOGI(TAG, "Subscribed: CMD/GET/REPLY/USER");
+        ESP_LOGI(TAG, "Subscribed: USER");
         if (s_connect_sem) xSemaphoreGive(s_connect_sem);
         break;
     case MQTT_EVENT_DISCONNECTED:
         s_mqtt_connected = false;
         s_mqtt_state = MQTT_STATE_ERROR;
+        led_notify_mqtt(false);
         ESP_LOGW(TAG, "Disconnected");
         break;
-    case MQTT_EVENT_DATA:
+    case MQTT_EVENT_DATA: {
         ESP_LOGI(TAG, "Rx topic=%.*s data=%.*s",
                  event->topic_len, event->topic,
                  event->data_len, event->data);
         led_status_rx_notify();
 
-        {
-            char topic_buf[MQTT_RX_TOPIC_LEN] = {0};
-            char data_buf[MQTT_RX_DATA_LEN] = {0};
-            int tlen = event->topic_len < MQTT_RX_TOPIC_LEN - 1 ? event->topic_len : MQTT_RX_TOPIC_LEN - 1;
-            int dlen = event->data_len < MQTT_RX_DATA_LEN - 1 ? event->data_len : MQTT_RX_DATA_LEN - 1;
-            memcpy(topic_buf, event->topic, tlen);
-            memcpy(data_buf, event->data, dlen);
-            if (!strstr(topic_buf, "_reply")) {
-                rx_history_add(topic_buf, data_buf);
-            }
+        char topic_buf[MQTT_RX_TOPIC_LEN] = {0};
+        char data_buf[MQTT_RX_DATA_LEN] = {0};
+        int tlen = event->topic_len < MQTT_RX_TOPIC_LEN - 1 ? event->topic_len : MQTT_RX_TOPIC_LEN - 1;
+        int dlen = event->data_len < MQTT_RX_DATA_LEN - 1 ? event->data_len : MQTT_RX_DATA_LEN - 1;
+        memcpy(topic_buf, event->topic, tlen);
+        memcpy(data_buf, event->data, dlen);
+        if (!strstr(topic_buf, "_reply")) {
+            rx_history_add(topic_buf, data_buf);
         }
 
-        {
-            cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
-            if (!root) break;
+        cJSON *root = cJSON_ParseWithLength(data_buf, (size_t)dlen);
+        if (!root) {
+            ESP_LOGW(TAG, "RX not JSON, skip parse");
+        } else {
+            cJSON *j_id     = cJSON_GetObjectItemCaseSensitive(root, "DeviceID");
+            cJSON *j_flag   = cJSON_GetObjectItemCaseSensitive(root, "Flag");
+            cJSON *j_switch = cJSON_GetObjectItemCaseSensitive(root, "Switch");
+            cJSON *j_set1   = cJSON_GetObjectItemCaseSensitive(root, "Set1");
+            if (!j_set1) j_set1 = cJSON_GetObjectItemCaseSensitive(root, "SetValue1");
+            cJSON *j_set2   = cJSON_GetObjectItemCaseSensitive(root, "Set2");
+            if (!j_set2) j_set2 = cJSON_GetObjectItemCaseSensitive(root, "SetValue2");
 
-            cJSON *params = cJSON_GetObjectItem(root, "params");
-            if (params) {
-                cJSON *wd_a = cJSON_GetObjectItem(params, "wd_a");
-                if (wd_a) {
-                    char tmp[24];
-                    if (cJSON_IsString(wd_a)) {
-                        snprintf(tmp, sizeof(tmp), "%s", wd_a->valuestring);
-                    } else if (cJSON_IsNumber(wd_a)) {
-                        snprintf(tmp, sizeof(tmp), "%.1f", wd_a->valuedouble);
-                    } else if (cJSON_IsBool(wd_a)) {
-                        snprintf(tmp, sizeof(tmp), "%s", cJSON_IsTrue(wd_a) ? "1" : "0");
-                    } else {
-                        tmp[0] = '\0';
+            const char *id_str   = j_id   && cJSON_IsString(j_id)   ? j_id->valuestring   : "";
+            const char *flag_str = j_flag && cJSON_IsString(j_flag) ? j_flag->valuestring : "";
+
+            if (strcmp(id_str, DEVICE_ID) == 0) {
+                if (flag_str[0] == 'R' || flag_str[0] == 'r') {
+                    ESP_LOGI(TAG, "RX frame match");
+
+                    if (j_switch && cJSON_IsNumber(j_switch)) {
+                        int sw = j_switch->valueint;
+                        switch1_set(sw != 0);
+                        ESP_LOGI(TAG, "switch set: %d -> LED %s", sw, sw ? "ON" : "OFF");
+                        snprintf(s_wd_a, sizeof(s_wd_a), "%d", sw);
                     }
-                    strncpy(s_wd_a, tmp, sizeof(s_wd_a) - 1);
-                    s_wd_a[sizeof(s_wd_a) - 1] = '\0';
-                }
-
-                cJSON *wd_b = cJSON_GetObjectItem(params, "wd_b");
-                if (wd_b) {
-                    char tmp[24];
-                    if (cJSON_IsString(wd_b)) {
-                        snprintf(tmp, sizeof(tmp), "%s", wd_b->valuestring);
-                    } else if (cJSON_IsNumber(wd_b)) {
-                        snprintf(tmp, sizeof(tmp), "%.1f", wd_b->valuedouble);
-                    } else if (cJSON_IsBool(wd_b)) {
-                        snprintf(tmp, sizeof(tmp), "%s", cJSON_IsTrue(wd_b) ? "1" : "0");
-                    } else {
-                        tmp[0] = '\0';
+                    if (j_set1 && cJSON_IsNumber(j_set1)) {
+                        s_set_a = (float)j_set1->valuedouble;
+                        snprintf(s_wd_b, sizeof(s_wd_b), "%.2f", s_set_a);
                     }
-                    strncpy(s_wd_b, tmp, sizeof(s_wd_b) - 1);
-                    s_wd_b[sizeof(s_wd_b) - 1] = '\0';
-                }
-
-                cJSON *num_item = cJSON_GetObjectItem(params, "num");
-                if (num_item && cJSON_IsNumber(num_item)) {
-                    s_num_val = num_item->valueint;
-                }
-
-                cJSON *from_item = cJSON_GetObjectItem(params, "from");
-                if (from_item && cJSON_IsString(from_item)) {
-                    strncpy(s_from_src, from_item->valuestring, sizeof(s_from_src) - 1);
-                    s_from_src[sizeof(s_from_src) - 1] = '\0';
-                }
-
-                cJSON *child = params->child;
-                s_msg_count = 0;
-                s_msg_idx = 0;
-                bool wd_a_in_list = false;
-
-                while (child && s_msg_count < MQTT_MSG_MAX_LINES) {
-                    char val_str[16];
-                    const char *key_name = child->string;
-                    const char *val_text = NULL;
-
-                    if (cJSON_IsBool(child)) {
-                        val_text = cJSON_IsTrue(child) ? "ON" : "OFF";
-                    } else if (cJSON_IsNumber(child)) {
-                        double v = child->valuedouble;
-                        if (v == (double)(long long)v) {
-                            snprintf(val_str, sizeof(val_str), "%lld", (long long)v);
-                        } else {
-                            snprintf(val_str, sizeof(val_str), "%.3f", v);
-                            int len = strlen(val_str);
-                            while (len > 0 && val_str[len-1] == '0') val_str[--len] = '\0';
-                            if (len > 0 && val_str[len-1] == '.') val_str[--len] = '\0';
-                        }
-                    } else if (cJSON_IsString(child)) {
-                        snprintf(val_str, sizeof(val_str), "%s", child->valuestring);
+                    if (j_set2 && cJSON_IsNumber(j_set2)) {
+                        s_set_b = (float)j_set2->valuedouble;
                     }
 
-                    if (key_name) {
-                        if (strcmp(key_name, "wd_a") == 0) wd_a_in_list = true;
-                        char line[32];
-                        int n = snprintf(line, sizeof(line), "%s=", key_name);
-                        if (n >= (int)sizeof(line)) n = sizeof(line) - 1;
-                        const char *disp = val_text ? val_text : val_str;
-                        snprintf(line + n, sizeof(line) - n, "%s", disp ? disp : "?");
-                        strncpy(s_msg_lines[s_msg_count], line, sizeof(s_msg_lines[s_msg_count]) - 1);
-                        s_msg_lines[s_msg_count][sizeof(s_msg_lines[s_msg_count]) - 1] = '\0';
+                    s_msg_count = 0;
+                    s_msg_idx = 0;
+                    cJSON *child = root->child;
+                    while (child && s_msg_count < MQTT_MSG_MAX_LINES) {
+                        const char *key = child->string ? child->string : "";
+                        if (cJSON_IsString(child))
+                            snprintf(s_msg_lines[s_msg_count], sizeof(s_msg_lines[0]),
+                                     "%s=%s", key, child->valuestring);
+                        else if (cJSON_IsNumber(child))
+                            snprintf(s_msg_lines[s_msg_count], sizeof(s_msg_lines[0]),
+                                     "%s=%.4g", key, child->valuedouble);
                         s_msg_count++;
+                        child = child->next;
                     }
 
-                    child = child->next;
+                    {
+                        float ack_temp = roundf(temp_sensor_get() * 10.0f) / 10.0f;
+                        int   ack_rssi = wifi_is_connected() ? wifi_get_rssi() : -127;
+                        char ack_buf[320];
+                        int n = snprintf(ack_buf, sizeof(ack_buf),
+                            "{\"DeviceID\":\"%s\",\"Ack\":\"OK\",\"Temp\":%.1f,\"RSSI\":%d,"
+                            "\"Switch\":%d,\"Field1\":%.2f,\"Field2\":%.2f,"
+                            "\"Set1\":%.2f,\"Set2\":%.2f}",
+                            DEVICE_ID, ack_temp, ack_rssi, switch1_get() ? 1 : 0,
+                            s_field_a, s_field_b, s_set_a, s_set_b);
+                        if (n > 0 && n < (int)sizeof(ack_buf)) {
+                            ESP_LOGI(TAG, "RX ack: %s", ack_buf);
+                            mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, ack_buf, 0);
+                        }
+                    }
+                } else if (flag_str[0] == 'T' || flag_str[0] == 't') {
+                    ESP_LOGI(TAG, "TX frame echoed, ignoring");
                 }
-
-                if (!wd_a_in_list && s_wd_a[0] && s_msg_count < MQTT_MSG_MAX_LINES) {
-                    snprintf(s_msg_lines[s_msg_count], sizeof(s_msg_lines[s_msg_count]), "wd_a=");
-                    strncat(s_msg_lines[s_msg_count], s_wd_a,
-                            sizeof(s_msg_lines[s_msg_count]) - strlen(s_msg_lines[s_msg_count]) - 1);
-                    s_msg_count++;
-                }
-
             } else {
-                s_msg_count = 0;
-                s_msg_idx = 0;
-
-                cJSON *num_f = cJSON_GetObjectItem(root, "num");
-                if (num_f && cJSON_IsNumber(num_f)) s_num_val = num_f->valueint;
-
-                cJSON *from_f = cJSON_GetObjectItem(root, "from");
-                if (from_f && cJSON_IsString(from_f)) {
-                    strncpy(s_from_src, from_f->valuestring, sizeof(s_from_src) - 1);
-                    s_from_src[sizeof(s_from_src) - 1] = '\0';
-                }
-
-                cJSON *child = root->child;
-                while (child && s_msg_count < MQTT_MSG_MAX_LINES) {
-                    char val_str[24];
-                    const char *key_name = child->string;
-                    const char *val_text = NULL;
-
-                    if (cJSON_IsBool(child)) {
-                        val_text = cJSON_IsTrue(child) ? "ON" : "OFF";
-                    } else if (cJSON_IsNumber(child)) {
-                        double v = child->valuedouble;
-                        if (v == (double)(long long)v) {
-                            snprintf(val_str, sizeof(val_str), "%lld", (long long)v);
-                        } else {
-                            snprintf(val_str, sizeof(val_str), "%.1f", v);
-                        }
-                    } else if (cJSON_IsString(child)) {
-                        snprintf(val_str, sizeof(val_str), "%s", child->valuestring);
-                    } else {
-                        child = child->next;
-                        continue;
-                    }
-
-                    if (key_name) {
-                        char line[32];
-                        int n = snprintf(line, sizeof(line), "%s:", key_name);
-                        const char *disp = val_text ? val_text : val_str;
-                        snprintf(line + n, sizeof(line) - n, "%s", disp ? disp : "?");
-                        strncpy(s_msg_lines[s_msg_count], line, sizeof(s_msg_lines[s_msg_count]) - 1);
-                        s_msg_lines[s_msg_count][sizeof(s_msg_lines[s_msg_count]) - 1] = '\0';
-                        s_msg_count++;
-                    }
-                    child = child->next;
-                }
-                ESP_LOGI(TAG, "Flat JSON parsed, %d msg lines", s_msg_count);
+                ESP_LOGW(TAG, "Device ID mismatch: got '%s' expect '%s'", id_str, DEVICE_ID);
             }
-
-            {
-                bool led_on = false;
-                bool has_led = false;
-                const char *matched_key = NULL;
-
-                cJSON *scan_src = params ? params : root;
-                const char *led_names[] = {"light", "ledswitch", "led", "power", NULL};
-
-                for (int i = 0; led_names[i] && !has_led; i++) {
-                    cJSON *child = scan_src->child;
-                    while (child) {
-                        if (child->string && strcasecmp(child->string, led_names[i]) == 0) {
-                            led_on = cJSON_IsTrue(child) || (cJSON_IsNumber(child) && child->valueint != 0);
-                            has_led = true;
-                            matched_key = child->string;
-                            break;
-                        }
-                        child = child->next;
-                    }
-                }
-
-                ESP_LOGI(TAG, "LED scan: has_led=%d key=%s on=%d",
-                         has_led, matched_key ? matched_key : "(none)", led_on);
-
-                if (has_led) {
-                    led_mqtt_set(led_on);
-                    ESP_LOGI(TAG, "LED %s via '%s'", led_on ? "ON" : "OFF", matched_key);
-                }
-            }
-
-            {
-                int tlen = event->topic_len;
-                const char *topic = event->topic;
-                bool is_cmd = (tlen == (int)strlen(ALIYUN_TOPIC_CMD)) &&
-                              (memcmp(topic, ALIYUN_TOPIC_CMD, tlen) == 0);
-                if (is_cmd) {
-                }
-
-                bool is_get = (tlen == (int)strlen(ALIYUN_TOPIC_GET)) &&
-                              (memcmp(topic, ALIYUN_TOPIC_GET, tlen) == 0);
-                if (is_get) {
-                }
-            }
-
-            {
-                cJSON *params = cJSON_GetObjectItem(root, "params");
-                cJSON *payload_src = (params && cJSON_IsObject(params)) ? params : root;
-                char *p = cJSON_PrintUnformatted(payload_src);
-                if (p) {
-                    strncpy(s_last_payload, p, sizeof(s_last_payload) - 1);
-                    s_last_payload[sizeof(s_last_payload) - 1] = '\0';
-                    free(p);
-                    ui_notify_new_msg();
-                } else {
-                    s_last_payload[0] = '\0';
-                }
-            }
-
             cJSON_Delete(root);
         }
+
+        strncpy(s_last_payload, data_buf, sizeof(s_last_payload) - 1);
+        s_last_payload[sizeof(s_last_payload) - 1] = '\0';
+        ui_notify_new_msg();
         break;
+    }
     case MQTT_EVENT_ERROR:
         ESP_LOGE(TAG, "MQTT ERROR");
         if (event->error_handle) {
@@ -618,45 +408,10 @@ static esp_err_t mqtt_create_and_start_client(void)
     return ESP_OK;
 }
 
-esp_err_t mqtt_publish_status(void)
-{
-    if (!s_mqtt_connected || !s_mqtt_client) return ESP_ERR_INVALID_STATE;
-
-    char id[24];
-    snprintf(id, sizeof(id), "%lu", (unsigned long)(esp_timer_get_time() / 1000));
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "id", id);
-    cJSON_AddStringToObject(root, "version", "1.0");
-    cJSON_AddStringToObject(root, "method", "thing.event.property.post");
-    cJSON *params = cJSON_CreateObject();
-    cJSON_AddItemToObject(root, "params", params);
-
-    bool wifi_ok = wifi_is_connected();
-    cJSON_AddBoolToObject(params, "LedSwitch", led_mqtt_get());
-    cJSON_AddNumberToObject(params, "temperature", temp_sensor_get());
-    cJSON_AddNumberToObject(params, "WiFiRSSI", wifi_ok ? wifi_get_rssi() : 0);
-    cJSON_AddStringToObject(params, "DeviceIP", wifi_ok ? wifi_get_ip() : "");
-    cJSON_AddStringToObject(params, "FirmwareVersion", APP_VERSION);
-    cJSON_AddNumberToObject(params, "UptimeMs", (double)(esp_timer_get_time() / 1000 - s_start_time_ms));
-    cJSON_AddNumberToObject(params, "FreeHeap", (double)heap_caps_get_free_size(MALLOC_CAP_8BIT));
-
-    char *payload = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!payload) return ESP_FAIL;
-
-    esp_mqtt_client_publish(s_mqtt_client, ALIYUN_TOPIC_STATUS, payload, 0, 0, 0);
-    led_status_tx_notify();
-    ESP_LOGI(TAG, "Post property (id=%s)", id);
-    free(payload);
-    return ESP_OK;
-}
-
 static void mqtt_manager_task(void *arg)
 {
     int retry_count = 0;
     int temp_tick = 0;
-    float temp_val = 26.1f;
 
     while (1) {
         switch (s_mqtt_state) {
@@ -738,10 +493,11 @@ static void mqtt_manager_task(void *arg)
             temp_tick++;
             if (temp_tick >= 15) {
                 temp_tick = 0;
-                char payload[64];
-                snprintf(payload, sizeof(payload), "{\"temperature\":%.1f}", temp_val);
-                mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, payload, 0);
-                temp_val += 0.1f;
+                char *frame = mqtt_build_tx_frame();
+                if (frame) {
+                    mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, frame, 0);
+                    free(frame);
+                }
             }
             vTaskDelay(pdMS_TO_TICKS(2000));
             break;
@@ -781,7 +537,10 @@ void mqtt_init(int64_t start_time_ms)
 
 esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)
 {
-    if (!s_mqtt_connected || !s_mqtt_client) return ESP_ERR_INVALID_STATE;
+    if (!s_mqtt_connected || !s_mqtt_client) {
+        led_status_tx_notify();
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!topic || strlen(topic) == 0) return ESP_ERR_INVALID_ARG;
     if (!data) data = "";
 
@@ -801,44 +560,16 @@ esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)
 
 esp_err_t mqtt_publish_user_update(const char *data)
 {
-    return mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, data, 0);
+    char *frame = mqtt_build_tx_frame();
+    if (!frame) return ESP_FAIL;
+    esp_err_t err = mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, frame, 0);
+    free(frame);
+    return err;
 }
 
 esp_err_t mqtt_publish_aliyun_params(const char *params_json)
 {
-    if (!s_mqtt_connected || !s_mqtt_client) return ESP_ERR_INVALID_STATE;
-    if (!params_json || strlen(params_json) == 0) return ESP_ERR_INVALID_ARG;
-
-    cJSON *params = cJSON_Parse(params_json);
-    if (!params) {
-        ESP_LOGW(TAG, "params_json invalid, wrap as string");
-        params = cJSON_CreateObject();
-        cJSON_AddStringToObject(params, "raw", params_json);
-    }
-
-    char id[24];
-    snprintf(id, sizeof(id), "%lu", (unsigned long)(esp_timer_get_time() / 1000));
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "id", id);
-    cJSON_AddStringToObject(root, "version", "1.0");
-    cJSON_AddStringToObject(root, "method", "thing.event.property.post");
-    cJSON_AddItemToObject(root, "params", params);
-
-    char *payload = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!payload) return ESP_FAIL;
-
-    int rc = esp_mqtt_client_publish(s_mqtt_client, ALIYUN_TOPIC_STATUS, payload, 0, 0, 0);
-    ESP_LOGI(TAG, "Aliyun post id=%s rc=%d", id, rc);
-
-    if (rc >= 0) {
-        led_status_tx_notify();
-        tx_history_add(ALIYUN_TOPIC_STATUS, payload, rc);
-    }
-
-    free(payload);
-    return (rc >= 0) ? ESP_OK : ESP_FAIL;
+    return mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, params_json, 0);
 }
 
 int mqtt_get_rx_entries(mqtt_rx_entry_t *out, int max_count)

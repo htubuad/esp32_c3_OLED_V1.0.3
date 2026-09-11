@@ -1,6 +1,6 @@
 #include "web_server.h"
 #include "wifi_manager.h"
-#include "led.h"
+#include "switch.h"
 #include "temp_sensor.h"
 #include "mqtt_aliyun.h"
 #include "version.h"
@@ -46,8 +46,8 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
     const char *mqtt_text = mqtt_is_connected() ? "正常" : "未连接";
     const char *mqtt_cls = mqtt_is_connected() ? "ok" : "warn";
-    const char *led_text = led_mqtt_get() ? "开" : "关";
-    const char *led_cls = led_mqtt_get() ? "ok" : "bad";
+    const char *led_text = switch1_get() ? "开" : "关";
+    const char *led_cls = switch1_get() ? "ok" : "bad";
     const char *ip_text = wifi_get_ip()[0] ? wifi_get_ip() : "无";
 
     httpd_resp_set_type(req, "text/html");
@@ -234,7 +234,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "ip", wifi_get_ip());
     cJSON_AddBoolToObject(root, "mqtt_connected", mqtt_is_connected());
     cJSON_AddNumberToObject(root, "temp", temp_sensor_get());
-    cJSON_AddBoolToObject(root, "led", led_mqtt_get());
+    cJSON_AddBoolToObject(root, "led", switch1_get());
     cJSON_AddNumberToObject(root, "rssi", wifi_get_rssi());
     cJSON_AddNumberToObject(root, "free_heap", heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
@@ -256,11 +256,11 @@ static esp_err_t led_post_handler(httpd_req_t *req)
     else if (strstr(buf, "action=off")) on = false;
     else return ESP_OK;
 
-    led_mqtt_set(on);
+    switch1_set(on);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "success", true);
-    cJSON_AddBoolToObject(root, "led", led_mqtt_get());
+    cJSON_AddBoolToObject(root, "led", switch1_get());
 
     char *out = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
@@ -367,7 +367,7 @@ static esp_err_t mqtt_data_handler(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "temp", temp_sensor_get());
-    cJSON_AddBoolToObject(root, "led", led_mqtt_get());
+    cJSON_AddBoolToObject(root, "led", switch1_get());
     cJSON_AddStringToObject(root, "last_topic", mqtt_get_last_rx_topic());
     cJSON_AddStringToObject(root, "last_data", mqtt_get_last_rx_data());
 

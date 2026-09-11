@@ -1,4 +1,5 @@
 idf_component_register(SRCS "main.c"
+                    "../components/switch.c"
                     "../components/led.c"
                     "../components/temp_sensor.c"
                     "../components/wifi_manager.c"
