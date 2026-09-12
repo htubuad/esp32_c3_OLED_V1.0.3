@@ -12,18 +12,14 @@ void switch_init(void);
 
 void sw0_set(bool on);
 bool sw0_get(void);
-bool sw0_read(void);
 
 void sw_bit1_set(bool on);
 bool sw_bit1_get(void);
-bool sw_bit1_read(void);
 
 void switch1_set(bool on);
 bool switch1_get(void);
-bool switch1_read(void);
 
 void power_set(bool on);
 bool power_get(void);
-bool power_read(void);
 
 #endif

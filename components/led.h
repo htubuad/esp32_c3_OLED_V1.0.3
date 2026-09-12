@@ -14,10 +14,7 @@ typedef enum {
 
 void led_init(void);
 
-void led_status_set(bool on);
-bool led_status_get(void);
 void led_status_mode_set(led_mode_t mode);
-led_mode_t led_status_mode_get(void);
 
 void led_notify_wifi_ap(bool active);
 void led_notify_wifi_sta(bool connected);

@@ -4,9 +4,6 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
-#include "esp_system.h"
-#include "esp_heap_caps.h"
-#include "driver/gpio.h"
 #include "version.h"
 #include "switch.h"
 #include "led.h"
@@ -27,6 +24,11 @@ void app_main(void)
     // ESP_LOGI(TAG, " ESP32-C3 Firmware v%s", APP_VERSION);
     // ESP_LOGI(TAG, "==================================");
 
+    esp_log_level_set("wifi", ESP_LOG_WARN);
+    esp_log_level_set("esp_netif_lwip", ESP_LOG_WARN);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+    esp_log_level_set("httpd", ESP_LOG_WARN);
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -41,29 +43,22 @@ void app_main(void)
 
     ESP_ERROR_CHECK(temp_sensor_init());
 
-    wifi_init_sta();
+    wifi_manager_start();
 
     if (wifi_is_connected()) {
         sntp_init_and_sync();
-        mqtt_init(s_start_time_ms);
+        mqtt_init();
         s_services_started = true;
     }
 
     start_webserver(s_start_time_ms);
 
-    // ESP_LOGI(TAG, "=== HEAP STATUS ===");
-    // ESP_LOGI(TAG, "Free heap: %d bytes", (int)esp_get_free_heap_size());
-    // ESP_LOGI(TAG, "Internal free: %d bytes", (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    // ESP_LOGI(TAG, "Largest free block: %d bytes", (int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-    // ESP_LOGI(TAG, "==================");
-
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(5000));
 
         if (wifi_is_connected() && !s_services_started) {
-            // ESP_LOGI(TAG, "WiFi connected, starting services...");
             sntp_init_and_sync();
-            mqtt_init(s_start_time_ms);
+            mqtt_init();
             s_services_started = true;
         }
     }

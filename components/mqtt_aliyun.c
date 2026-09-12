@@ -7,7 +7,6 @@
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "esp_timer.h"
-#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -15,7 +14,6 @@
 #include "mbedtls/md.h"
 #include <math.h>
 #include <string.h>
-#include <strings.h>
 #include <time.h>
 
 static const char *TAG = "ALIYUN";
@@ -48,20 +46,12 @@ enum {
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static volatile bool s_mqtt_connected = false;
 static int s_mqtt_state = MQTT_STATE_IDLE;
-static int64_t s_start_time_ms = 0;
 static SemaphoreHandle_t s_connect_sem = NULL;
-
-#define MQTT_PERIODIC_TX_ENABLED  0
-
-#define MQTT_MSG_MAX_LINES 3
 
 static char s_client_id[96];
 static char s_password[65];
 
 static char s_last_payload[256];
-
-static char s_msg_lines[MQTT_MSG_MAX_LINES][128] = {0};
-static int  s_msg_count = 0;
 
 static mqtt_rx_entry_t s_rx_history[MQTT_RX_MAX_ENTRIES];
 static int s_rx_head = 0;
@@ -73,30 +63,6 @@ static float  s_set_a   = 0.0f;
 static float  s_set_b   = 0.0f;
 static int    s_field1_data = 0;
 static int    s_field2_data = 0;
-
-static char *mqtt_build_tx_frame(char *out, size_t out_size)
-{
-    float temp = roundf(temp_sensor_get() * 10.0f) / 10.0f;
-    int   rssi = wifi_is_connected() ? wifi_get_rssi() : -127;
-
-    uint8_t switches = 0;
-    if (sw0_get())       switches |= 1;
-    if (sw_bit1_get())   switches |= 2;
-
-    int n = snprintf(out, out_size,
-        "{\"DeviceID\":\"%s\",\"Dir\":\"D>C\",\"Temp\":%.1f,\"RSSI\":%d,"
-        "\"Switches\":%d,\"light\":%d,\"power\":%d,"
-        "\"Field1\":%.2f,\"Field1_data\":%d,"
-        "\"Field2\":%.2f,\"Field2_data\":%d}",
-        DEVICE_ID, temp, rssi, switches,
-        switch1_get() ? 1 : 0, power_get() ? 1 : 0,
-        s_field_a, s_field1_data,
-        s_field_b, s_field2_data);
-
-    if (n < 0 || (size_t)n >= out_size) return NULL;
-
-    return out;
-}
 
 static void rx_history_add(const char *topic, const char *data)
 {
@@ -152,16 +118,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         s_mqtt_connected = true;
         s_mqtt_state = MQTT_STATE_CONNECTED;
         led_notify_mqtt(true);
-        // ESP_LOGI(TAG, "Connected!");
         esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_USER, 0);
-        // ESP_LOGI(TAG, "Subscribed: USER");
+        wifi_manager_request_close_ap();
         if (s_connect_sem) xSemaphoreGive(s_connect_sem);
         break;
     case MQTT_EVENT_DISCONNECTED:
         s_mqtt_connected = false;
         s_mqtt_state = MQTT_STATE_ERROR;
         led_notify_mqtt(false);
-        // ESP_LOGI(TAG, "Disconnected");
+        ESP_LOGW(TAG, "MQTT disconnected, will retry...");
         break;
     case MQTT_EVENT_DATA: {
         led_status_rx_notify();
@@ -251,20 +216,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         ack_set2_val = (float)j_set2->valuedouble;
                         s_set_b = ack_set2_val;
                         ack_set2_ok = true;
-                    }
-
-                    s_msg_count = 0;
-                    cJSON *child = root->child;
-                    while (child && s_msg_count < MQTT_MSG_MAX_LINES) {
-                        const char *key = child->string ? child->string : "";
-                        if (cJSON_IsString(child))
-                            snprintf(s_msg_lines[s_msg_count], sizeof(s_msg_lines[0]),
-                                     "%s=%s", key, child->valuestring);
-                        else if (cJSON_IsNumber(child))
-                            snprintf(s_msg_lines[s_msg_count], sizeof(s_msg_lines[0]),
-                                     "%s=%.4g", key, child->valuedouble);
-                        s_msg_count++;
-                        child = child->next;
                     }
 
                     vTaskDelay(pdMS_TO_TICKS(5));
@@ -505,19 +456,16 @@ static void mqtt_manager_task(void *arg)
     }
 }
 
-void mqtt_init(int64_t start_time_ms)
+void mqtt_init(void)
 {
-    s_start_time_ms = start_time_ms;
     s_mqtt_state = MQTT_STATE_IDLE;
 
     xTaskCreate(mqtt_manager_task, "mqtt_mgr", 3072, NULL, 4, NULL);
-    // ESP_LOGI(TAG, "MQTT manager task started");
 }
 
 esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)
 {
     if (!s_mqtt_connected || !s_mqtt_client) {
-        led_status_tx_notify();
         return ESP_ERR_INVALID_STATE;
     }
     if (!topic || strlen(topic) == 0) return ESP_ERR_INVALID_ARG;
@@ -535,13 +483,6 @@ esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)
         // ESP_LOGI(TAG, "TX failed rc=%d topic=%s", rc, topic);
         return ESP_FAIL;
     }
-}
-
-esp_err_t mqtt_publish_user_update(const char *data)
-{
-    char frame[256];
-    if (!mqtt_build_tx_frame(frame, sizeof(frame))) return ESP_FAIL;
-    return mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, frame, 0);
 }
 
 esp_err_t mqtt_publish_aliyun_params(const char *params_json)

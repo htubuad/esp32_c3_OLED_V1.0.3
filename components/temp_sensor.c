@@ -43,8 +43,3 @@ float temp_sensor_get(void)
     temperature_sensor_get_celsius(s_tsens, &s_temperature);
     return s_temperature;
 }
-
-bool temp_sensor_is_available(void)
-{
-    return s_available;
-}

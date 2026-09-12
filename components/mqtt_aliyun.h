@@ -2,7 +2,6 @@
 #define MQTT_ALIYUN_H
 
 #include <stdbool.h>
-#include <stdint.h>
 #include "esp_err.h"
 #include "version.h"
 
@@ -21,13 +20,12 @@ typedef struct {
 } mqtt_rx_entry_t;
 
 bool mqtt_is_connected(void);
-void mqtt_init(int64_t start_time_ms);
+void mqtt_init(void);
 const char *mqtt_get_last_rx_topic(void);
 const char *mqtt_get_last_rx_data(void);
 
 esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos);
 esp_err_t mqtt_publish_aliyun_params(const char *params_json);
-esp_err_t mqtt_publish_user_update(const char *data);
 int mqtt_get_rx_entries(mqtt_rx_entry_t *out, int max_count);
 
 #endif

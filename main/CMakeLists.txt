@@ -7,7 +7,6 @@ idf_component_register(SRCS "main.c"
                     "../components/sntp_sync.c"
                     "../components/mqtt_aliyun.c"
                     "../components/web_server.c"
-                    "../components/delay.c"
                     INCLUDE_DIRS "." "../components"
                     REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_driver_gpio esp_driver_ledc esp_http_server esp_timer mqtt mbedtls esp_driver_tsens heap lwip cjson)
 

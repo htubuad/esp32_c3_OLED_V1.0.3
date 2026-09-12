@@ -9,8 +9,8 @@
 #define LEDC_RESOLUTION     LEDC_TIMER_10_BIT
 #define LEDC_FREQ_HZ        5000
 
-#define BLINK_SLOW_US       500000
-#define BLINK_FAST_US       200000
+#define BLINK_SLOW_US       300000
+#define BLINK_FAST_US       90000
 
 #define NOTIFY_US           80000
 
@@ -27,12 +27,12 @@ static void resolve_status_mode(void)
 {
     if (s_mqtt_connected) {
         led_status_mode_set(LED_MODE_ON);
-    } else if (s_ap_active) {
-        led_status_mode_set(LED_MODE_BLINK_FAST);
     } else if (s_sta_connected) {
         led_status_mode_set(LED_MODE_BLINK_SLOW);
+    } else if (s_ap_active) {
+        led_status_mode_set(LED_MODE_BLINK_FAST);
     } else {
-        led_status_mode_set(LED_MODE_OFF);
+        led_status_mode_set(LED_MODE_BLINK_SLOW);
     }
 }
 
@@ -180,16 +180,6 @@ void led_status_tx_notify(void)
     notify_blink_once();
 }
 
-void led_status_set(bool on)
-{
-    led_status_mode_set(on ? LED_MODE_ON : LED_MODE_OFF);
-}
-
-bool led_status_get(void)
-{
-    return (s_status_mode != LED_MODE_OFF);
-}
-
 void led_status_mode_set(led_mode_t mode)
 {
     if (s_status_mode == mode && !s_notify_active) return;
@@ -222,11 +212,6 @@ void led_status_mode_set(led_mode_t mode)
         apply_gpio(false);
         break;
     }
-}
-
-led_mode_t led_status_mode_get(void)
-{
-    return s_status_mode;
 }
 
 void led_notify_wifi_ap(bool active)

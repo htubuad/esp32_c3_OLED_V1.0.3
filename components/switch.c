@@ -192,8 +192,3 @@ bool sw_bit1_get(void)
 {
     return s_sw_bit1_on;
 }
-
-bool sw0_read(void)         { return gpio_get_level(SWITCH0_GPIO) != 0; }
-bool sw_bit1_read(void)     { return gpio_get_level(SWITCH2_GPIO) != 0; }
-bool switch1_read(void)     { return gpio_get_level(SWITCH1_GPIO) != 0; }
-bool power_read(void)       { return gpio_get_level(POWER_GPIO)   != 0; }
