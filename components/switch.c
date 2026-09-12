@@ -127,22 +127,22 @@ void switch_init(void)
     bool saved_sw0 = nvs_load_sw0();
     s_sw0_on = saved_sw0;
     gpio_set_level(SWITCH0_GPIO, saved_sw0 ? 1 : 0);
-    ESP_LOGI(TAG, "sw0(bit0) init gpio=%d state=%d", SWITCH0_GPIO, saved_sw0);
+    // ESP_LOGI(TAG, "sw0(bit0) init gpio=%d state=%d", SWITCH0_GPIO, saved_sw0);
 
     bool saved_bit1 = nvs_load_sw_bit1();
     s_sw_bit1_on = saved_bit1;
     gpio_set_level(SWITCH2_GPIO, saved_bit1 ? 1 : 0);
-    ESP_LOGI(TAG, "sw_bit1(bit1) init gpio=%d state=%d", SWITCH2_GPIO, saved_bit1);
+    // ESP_LOGI(TAG, "sw_bit1(bit1) init gpio=%d state=%d", SWITCH2_GPIO, saved_bit1);
 
     bool saved_sw1 = nvs_load_sw1();
     s_sw1_on = saved_sw1;
     gpio_set_level(SWITCH1_GPIO, saved_sw1 ? 1 : 0);
-    ESP_LOGI(TAG, "switch1(light) init gpio=%d state=%d", SWITCH1_GPIO, saved_sw1);
+    // ESP_LOGI(TAG, "switch1(light) init gpio=%d state=%d", SWITCH1_GPIO, saved_sw1);
 
     bool saved_power = nvs_load_power();
     s_power_on = saved_power;
     gpio_set_level(POWER_GPIO, saved_power ? 1 : 0);
-    ESP_LOGI(TAG, "power init gpio=%d state=%d", POWER_GPIO, saved_power);
+    // ESP_LOGI(TAG, "power init gpio=%d state=%d", POWER_GPIO, saved_power);
 }
 
 void switch1_set(bool on)

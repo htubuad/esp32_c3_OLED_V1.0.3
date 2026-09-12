@@ -6,6 +6,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/task.h"
@@ -43,9 +44,9 @@ static void mdns_register_sta(void)
         err_t ret = mdns_resp_add_netif(netif, MDNS_HOSTNAME);
         if (ret == ERR_OK) {
             s_mdns_sta_registered = true;
-            ESP_LOGI(TAG, "mDNS: STA registered as %s.local", MDNS_HOSTNAME);
+            // ESP_LOGI(TAG, "mDNS: STA registered as %s.local", MDNS_HOSTNAME);
         } else {
-            ESP_LOGW(TAG, "mDNS: STA register failed (%d)", ret);
+            // ESP_LOGI(TAG, "mDNS: STA register failed (%d)", ret);
         }
     }
 }
@@ -60,9 +61,9 @@ static void mdns_register_ap(void)
     if (netif) {
         err_t ret = mdns_resp_add_netif(netif, MDNS_HOSTNAME);
         if (ret == ERR_OK) {
-            ESP_LOGI(TAG, "mDNS: AP registered as %s.local", MDNS_HOSTNAME);
+            // ESP_LOGI(TAG, "mDNS: AP registered as %s.local", MDNS_HOSTNAME);
         } else {
-            ESP_LOGW(TAG, "mDNS: AP register failed (%d)", ret);
+            // ESP_LOGI(TAG, "mDNS: AP register failed (%d)", ret);
         }
     }
 }
@@ -73,7 +74,7 @@ static void mdns_unregister_sta(void)
     if (netif && s_mdns_sta_registered) {
         mdns_resp_remove_netif(netif);
         s_mdns_sta_registered = false;
-        ESP_LOGI(TAG, "mDNS: STA unregistered");
+        // ESP_LOGI(TAG, "mDNS: STA unregistered");
     }
 }
 
@@ -81,7 +82,7 @@ static void mdns_unregister_sta(void)
 #define NVS_KEY_SSID  "ssid"
 #define NVS_KEY_PASS  "pass"
 
-#define AP_DEFAULT_SSID  "ESP32-C3-Setup"
+#define AP_DEFAULT_SSID  "DEV-MGT_26001"
 
 #define MAX_RETRY      3
 #define CONNECT_TIMEOUT_SEC  15
@@ -147,7 +148,7 @@ bool wifi_cred_load(wifi_cred_t *cred)
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "No WiFi config in NVS (nvs_open: %s)", esp_err_to_name(err));
+        // ESP_LOGI(TAG, "No WiFi config in NVS (nvs_open: %s)", esp_err_to_name(err));
         return false;
     }
 
@@ -155,7 +156,7 @@ bool wifi_cred_load(wifi_cred_t *cred)
     size_t pass_len = sizeof(cred->password);
     err = nvs_get_str(handle, NVS_KEY_SSID, cred->ssid, &ssid_len);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "No SSID saved (err: %s)", esp_err_to_name(err));
+        // ESP_LOGI(TAG, "No SSID saved (err: %s)", esp_err_to_name(err));
         nvs_close(handle);
         return false;
     }
@@ -163,7 +164,7 @@ bool wifi_cred_load(wifi_cred_t *cred)
     nvs_close(handle);
 
     if (strlen(cred->ssid) == 0) return false;
-    ESP_LOGI(TAG, "Loaded WiFi config: SSID=%s", cred->ssid);
+    // ESP_LOGI(TAG, "Loaded WiFi config: SSID=%s", cred->ssid);
     return true;
 }
 
@@ -174,7 +175,7 @@ bool wifi_cred_save(const wifi_cred_t *cred)
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_open write failed: %s", esp_err_to_name(err));
+        // ESP_LOGI(TAG, "nvs_open write failed: %s", esp_err_to_name(err));
         return false;
     }
 
@@ -188,10 +189,10 @@ bool wifi_cred_save(const wifi_cred_t *cred)
     nvs_close(handle);
 
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "WiFi config saved to NVS");
+        // ESP_LOGI(TAG, "WiFi config saved to NVS");
         return true;
     }
-    ESP_LOGE(TAG, "Failed to save WiFi config: %s", esp_err_to_name(err));
+    // ESP_LOGI(TAG, "Failed to save WiFi config: %s", esp_err_to_name(err));
     return false;
 }
 
@@ -204,7 +205,7 @@ void wifi_cred_clear(void)
     nvs_erase_key(handle, NVS_KEY_PASS);
     nvs_commit(handle);
     nvs_close(handle);
-    ESP_LOGI(TAG, "WiFi config cleared from NVS");
+    // ESP_LOGI(TAG, "WiFi config cleared from NVS");
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -212,10 +213,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         if (s_sta_connect_allowed) {
-            ESP_LOGI(TAG, "WiFi STA started, connecting...");
+            // ESP_LOGI(TAG, "WiFi STA started, connecting...");
             esp_wifi_connect();
         } else {
-            ESP_LOGI(TAG, "WiFi STA started (AP mode), auto-connect disabled");
+            // ESP_LOGI(TAG, "WiFi STA started (AP mode), auto-connect disabled");
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
@@ -224,17 +225,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         memset(s_ip_str, 0, sizeof(s_ip_str));
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         mdns_unregister_sta();
-        ESP_LOGW(TAG, "Disconnected! reason=%d (%s), rssi=%d",
-                 disconn->reason, disconnect_reason_str(disconn->reason), disconn->rssi);
+        // ESP_LOGI(TAG, "Disconnected! reason=%d (%s), rssi=%d", disconn->reason, disconnect_reason_str(disconn->reason), disconn->rssi);
         if (s_sta_connect_allowed && s_retry_count < MAX_RETRY) {
             esp_wifi_connect();
             s_retry_count++;
-            ESP_LOGI(TAG, "Retry (%d/%d)...", s_retry_count, MAX_RETRY);
+            // ESP_LOGI(TAG, "Retry (%d/%d)...", s_retry_count, MAX_RETRY);
         } else if (!s_sta_connect_allowed) {
-            ESP_LOGI(TAG, "Auto-connect disabled (AP mode), skip retry");
+            // ESP_LOGI(TAG, "Auto-connect disabled (AP mode), skip retry");
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-            ESP_LOGE(TAG, "Max retries reached");
+            // ESP_LOGI(TAG, "Max retries reached");
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
@@ -243,11 +243,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         led_notify_wifi_sta(true);
         s_retry_count = 0;
         mdns_register_sta();
-        ESP_LOGI(TAG, "========================================");
-        ESP_LOGI(TAG, "   WiFi CONNECTED");
-        ESP_LOGI(TAG, "   IP   : %s", s_ip_str);
-        ESP_LOGI(TAG, "   URL  : http://%s.local", MDNS_HOSTNAME);
-        ESP_LOGI(TAG, "========================================");
+        // ESP_LOGI(TAG, "========================================");
+        // ESP_LOGI(TAG, "   WiFi CONNECTED");
+        // ESP_LOGI(TAG, "   IP   : %s", s_ip_str);
+        // ESP_LOGI(TAG, "   URL  : http://%s.local", MDNS_HOSTNAME);
+        // ESP_LOGI(TAG, "========================================");
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
         xEventGroupSetBits(s_wifi_event_group, WIFI_SCAN_DONE_BIT);
@@ -293,14 +293,14 @@ void wifi_init_sta(void)
                 pdMS_TO_TICKS(CONNECT_TIMEOUT_SEC * 1000));
 
         if (bits & WIFI_CONNECTED_BIT) {
-            ESP_LOGI(TAG, "Auto-connect succeeded");
+            // ESP_LOGI(TAG, "Auto-connect succeeded");
             return;
         } else {
-            ESP_LOGW(TAG, "Auto-connect failed, starting AP for provisioning...");
+            // ESP_LOGI(TAG, "Auto-connect failed, starting AP for provisioning...");
             esp_wifi_stop();
         }
     } else {
-        ESP_LOGI(TAG, "No saved credentials, starting AP for provisioning...");
+        // ESP_LOGI(TAG, "No saved credentials, starting AP for provisioning...");
     }
 
     wifi_start_ap(AP_DEFAULT_SSID);
@@ -309,7 +309,7 @@ void wifi_init_sta(void)
 esp_err_t wifi_try_connect(const char *ssid, const char *password)
 {
     if (!ssid || strlen(ssid) == 0) {
-        ESP_LOGE(TAG, "SSID is empty");
+        // ESP_LOGI(TAG, "SSID is empty");
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -328,7 +328,7 @@ esp_err_t wifi_try_connect(const char *ssid, const char *password)
     esp_wifi_get_mode(&cur_mode);
 
     if (cur_mode == WIFI_MODE_AP) {
-        ESP_LOGI(TAG, "Switching AP -> APSTA (keep AP, add STA)...");
+        // ESP_LOGI(TAG, "Switching AP -> APSTA (keep AP, add STA)...");
         esp_wifi_stop();
         vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -360,12 +360,12 @@ esp_err_t wifi_try_connect(const char *ssid, const char *password)
 
         ESP_ERROR_CHECK(esp_wifi_start());
     } else if (cur_mode == WIFI_MODE_APSTA) {
-        ESP_LOGI(TAG, "APSTA mode, just reconnect STA...");
+        // ESP_LOGI(TAG, "APSTA mode, just reconnect STA...");
         esp_wifi_disconnect();
         vTaskDelay(pdMS_TO_TICKS(50));
         esp_wifi_connect();
     } else {
-        ESP_LOGI(TAG, "STA mode running, reconnecting with new credentials...");
+        // ESP_LOGI(TAG, "STA mode running, reconnecting with new credentials...");
         esp_wifi_disconnect();
         vTaskDelay(pdMS_TO_TICKS(50));
         esp_wifi_connect();
@@ -380,13 +380,40 @@ esp_err_t wifi_try_connect(const char *ssid, const char *password)
         strncpy(cred.ssid, ssid, sizeof(cred.ssid) - 1);
         if (password) strncpy(cred.password, password, sizeof(cred.password) - 1);
         wifi_cred_save(&cred);
-        ESP_LOGI(TAG, "Connected to %s, credentials saved. Switching to STA-only...", ssid);
+        // ESP_LOGI(TAG, "Connected to %s, credentials saved. Switching to STA-only...", ssid);
         xTaskCreate(stop_ap_task, "stop_ap", 1024, NULL, 4, NULL);
         return ESP_OK;
     }
 
-    ESP_LOGW(TAG, "Failed to connect to %s", ssid);
+    // ESP_LOGI(TAG, "Failed to connect to %s", ssid);
     return ESP_FAIL;
+}
+
+static wifi_cred_t s_pending_cred;
+static esp_timer_handle_t s_reconnect_timer;
+
+static void reconnect_timer_cb(void *arg)
+{
+    wifi_try_connect(s_pending_cred.ssid, s_pending_cred.password);
+}
+
+void wifi_request_connect(const char *ssid, const char *password)
+{
+    snprintf(s_pending_cred.ssid, sizeof(s_pending_cred.ssid), "%s", ssid);
+    snprintf(s_pending_cred.password, sizeof(s_pending_cred.password), "%s", password ? password : "");
+
+    if (s_reconnect_timer) {
+        esp_timer_stop(s_reconnect_timer);
+        esp_timer_delete(s_reconnect_timer);
+        s_reconnect_timer = NULL;
+    }
+    esp_timer_create_args_t args = {
+        .callback = reconnect_timer_cb,
+        .name = "reconnect",
+        .dispatch_method = ESP_TIMER_TASK,
+    };
+    esp_timer_create(&args, &s_reconnect_timer);
+    esp_timer_start_once(s_reconnect_timer, 1500000);
 }
 
 esp_err_t wifi_scan_aps(wifi_ap_info_t *out, uint16_t *count)
@@ -399,25 +426,25 @@ esp_err_t wifi_scan_aps(wifi_ap_info_t *out, uint16_t *count)
     wifi_scan_config_t scan_cfg = { .ssid = NULL, .bssid = NULL, .channel = 0, .show_hidden = false };
 
     if (cur_mode != WIFI_MODE_APSTA && cur_mode != WIFI_MODE_STA) {
-        ESP_LOGE(TAG, "Scan: wrong mode %d, need APSTA or STA", cur_mode);
+        // ESP_LOGI(TAG, "Scan: wrong mode %d, need APSTA or STA", cur_mode);
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "Scan: starting (mode=%d)...", cur_mode);
+    // ESP_LOGI(TAG, "Scan: starting (mode=%d)...", cur_mode);
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Scan start failed: %s", esp_err_to_name(err));
+        // ESP_LOGI(TAG, "Scan start failed: %s", esp_err_to_name(err));
         return err;
     }
 
     uint16_t ap_count = 0;
     esp_wifi_scan_get_ap_num(&ap_count);
-    ESP_LOGI(TAG, "Scan found %d APs", ap_count);
+    // ESP_LOGI(TAG, "Scan found %d APs", ap_count);
 
     uint16_t max = (ap_count > WIFI_MAX_AP_COUNT) ? WIFI_MAX_AP_COUNT : ap_count;
     wifi_ap_record_t *ap_list = heap_caps_malloc(sizeof(wifi_ap_record_t) * max, MALLOC_CAP_8BIT);
     if (!ap_list) {
-        ESP_LOGE(TAG, "Scan: no heap for ap_list (%d bytes)", (int)(sizeof(wifi_ap_record_t) * max));
+        // ESP_LOGI(TAG, "Scan: no heap for ap_list (%d bytes)", (int)(sizeof(wifi_ap_record_t) * max));
         return ESP_ERR_NO_MEM;
     }
     esp_wifi_scan_get_ap_records(&max, ap_list);
@@ -427,8 +454,7 @@ esp_err_t wifi_scan_aps(wifi_ap_info_t *out, uint16_t *count)
         out[i].rssi = ap_list[i].rssi;
         out[i].auth = ap_list[i].authmode;
         out[i].channel = ap_list[i].primary;
-        ESP_LOGI(TAG, "  [%2d] SSID: %-32s RSSI: %4d Auth: %s Ch: %d",
-                 i + 1, out[i].ssid, out[i].rssi, auth_mode_str(out[i].auth), out[i].channel);
+        // ESP_LOGI(TAG, "  [%2d] SSID: %-32s RSSI: %4d Auth: %s Ch: %d", i + 1, out[i].ssid, out[i].rssi, auth_mode_str(out[i].auth), out[i].channel);
     }
 
     free(ap_list);
@@ -445,20 +471,20 @@ static void stop_ap_task(void *arg)
         return;
     }
 
-    ESP_LOGI(TAG, "Switching APSTA -> STA only");
+    // ESP_LOGI(TAG, "Switching APSTA -> STA only");
 
     dns_server_stop();
 
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Set STA mode failed: %s", esp_err_to_name(err));
+        // ESP_LOGI(TAG, "Set STA mode failed: %s", esp_err_to_name(err));
         vTaskDelete(NULL);
         return;
     }
 
     s_ap_active = false;
     led_notify_wifi_ap(false);
-    ESP_LOGI(TAG, "AP stopped, now STA-only. IP: %s", s_ip_str);
+    // ESP_LOGI(TAG, "AP stopped, now STA-only. IP: %s", s_ip_str);
     vTaskDelete(NULL);
 }
 
@@ -484,7 +510,14 @@ void wifi_start_ap(const char *ap_ssid)
         esp_netif_set_ip_info(s_netif_ap, &ap_ip_info);
     }
 
-    ESP_LOGI(TAG, "Stopping WiFi before APSTA switch...");
+    {
+        esp_netif_dhcps_stop(s_netif_ap);
+        uint32_t dns_ip = htonl(0xC0A80401);
+        esp_netif_dhcps_option(s_netif_ap, ESP_NETIF_OP_SET, ESP_NETIF_DOMAIN_NAME_SERVER, &dns_ip, sizeof(dns_ip));
+        esp_netif_dhcps_start(s_netif_ap);
+    }
+
+    // ESP_LOGI(TAG, "Stopping WiFi before APSTA switch...");
     esp_wifi_disconnect();
     esp_wifi_stop();
     vTaskDelay(pdMS_TO_TICKS(300));
@@ -517,12 +550,12 @@ void wifi_start_ap(const char *ap_ssid)
     esp_netif_ip_info_t ip_info;
     if (esp_netif_get_ip_info(s_netif_ap, &ip_info) == ESP_OK) {
         snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&ip_info.ip));
-        ESP_LOGI(TAG, "========================================");
-        ESP_LOGI(TAG, "   AP Mode Active (OPEN)");
-        ESP_LOGI(TAG, "   SSID : %s", ssid);
-        ESP_LOGI(TAG, "   IP   : %s", s_ip_str);
-        ESP_LOGI(TAG, "   URL  : http://%s.local", MDNS_HOSTNAME);
-        ESP_LOGI(TAG, "========================================");
+        // ESP_LOGI(TAG, "========================================");
+        // ESP_LOGI(TAG, "   AP Mode Active (OPEN)");
+        // ESP_LOGI(TAG, "   SSID : %s", ssid);
+        // ESP_LOGI(TAG, "   IP   : %s", s_ip_str);
+        // ESP_LOGI(TAG, "   URL  : http://%s.local", MDNS_HOSTNAME);
+        // ESP_LOGI(TAG, "========================================");
     } else {
         memset(s_ip_str, 0, sizeof(s_ip_str));
     }

@@ -4,8 +4,6 @@
 #include "led.h"
 #include "temp_sensor.h"
 #include "version.h"
-#include "oled.h"
-#include "ui_dashboard.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "esp_timer.h"
@@ -55,41 +53,28 @@ static SemaphoreHandle_t s_connect_sem = NULL;
 
 #define MQTT_PERIODIC_TX_ENABLED  0
 
-#define MQTT_MSG_Y_START  48
-#define MQTT_MSG_FONT     OLED_SIZE_16
-#define MQTT_MSG_LINE_H   16
-#define MQTT_MSG_MAX_LINES 5
+#define MQTT_MSG_MAX_LINES 3
 
-static char s_client_id[128];
-static char s_password[72];
+static char s_client_id[96];
+static char s_password[65];
 
-static char s_wd_a[128] = {0};
-static char s_wd_b[128] = {0};
-
-static int  s_num_val = 0;
-static char s_from_src[64] = {0};
-
-static char s_last_payload[512] = {0};
+static char s_last_payload[256];
 
 static char s_msg_lines[MQTT_MSG_MAX_LINES][128] = {0};
 static int  s_msg_count = 0;
-static int  s_msg_idx = 0;
 
 static mqtt_rx_entry_t s_rx_history[MQTT_RX_MAX_ENTRIES];
 static int s_rx_head = 0;
 static int s_rx_total = 0;
 
-static mqtt_tx_entry_t s_tx_history[MQTT_TX_MAX_ENTRIES];
-static int s_tx_head = 0;
-static int s_tx_total = 0;
-static int s_tx_msg_id = 0;
-
 static float  s_field_a = 0.0f;
 static float  s_field_b = 0.0f;
 static float  s_set_a   = 0.0f;
 static float  s_set_b   = 0.0f;
+static int    s_field1_data = 0;
+static int    s_field2_data = 0;
 
-static char *mqtt_build_tx_frame(void)
+static char *mqtt_build_tx_frame(char *out, size_t out_size)
 {
     float temp = roundf(temp_sensor_get() * 10.0f) / 10.0f;
     int   rssi = wifi_is_connected() ? wifi_get_rssi() : -127;
@@ -98,18 +83,17 @@ static char *mqtt_build_tx_frame(void)
     if (sw0_get())       switches |= 1;
     if (sw_bit1_get())   switches |= 2;
 
-    char *out = (char *)malloc(320);
-    if (!out) return NULL;
-
-    int n = snprintf(out, 320,
+    int n = snprintf(out, out_size,
         "{\"DeviceID\":\"%s\",\"Dir\":\"D>C\",\"Temp\":%.1f,\"RSSI\":%d,"
         "\"Switches\":%d,\"light\":%d,\"power\":%d,"
-        "\"Field1\":%.2f,\"Field2\":%.2f}",
+        "\"Field1\":%.2f,\"Field1_data\":%d,"
+        "\"Field2\":%.2f,\"Field2_data\":%d}",
         DEVICE_ID, temp, rssi, switches,
         switch1_get() ? 1 : 0, power_get() ? 1 : 0,
-        s_field_a, s_field_b);
+        s_field_a, s_field1_data,
+        s_field_b, s_field2_data);
 
-    if (n < 0 || n >= 320) { free(out); return NULL; }
+    if (n < 0 || (size_t)n >= out_size) return NULL;
 
     return out;
 }
@@ -127,38 +111,7 @@ static void rx_history_add(const char *topic, const char *data)
     if (s_rx_total < MQTT_RX_MAX_ENTRIES) s_rx_total++;
 }
 
-static void tx_history_add(const char *topic, const char *data, int msg_id)
-{
-    mqtt_tx_entry_t *e = &s_tx_history[s_tx_head];
-    strncpy(e->topic, topic ? topic : "", MQTT_RX_TOPIC_LEN - 1);
-    e->topic[MQTT_RX_TOPIC_LEN - 1] = '\0';
-    strncpy(e->data, data ? data : "", MQTT_RX_DATA_LEN - 1);
-    e->data[MQTT_RX_DATA_LEN - 1] = '\0';
-    e->timestamp_ms = esp_timer_get_time() / 1000;
-    e->msg_id = msg_id;
-    e->used = true;
-    s_tx_head = (s_tx_head + 1) % MQTT_TX_MAX_ENTRIES;
-    if (s_tx_total < MQTT_TX_MAX_ENTRIES) s_tx_total++;
-}
-
 bool mqtt_is_connected(void) { return s_mqtt_connected; }
-
-const char *mqtt_get_wd_a(void)
-{
-    return s_wd_a[0] ? s_wd_a : "--";
-}
-
-const char *mqtt_get_wd_b(void)
-{
-    return s_wd_b[0] ? s_wd_b : "--";
-}
-
-int mqtt_get_num(void) { return s_num_val; }
-
-const char *mqtt_get_from(void)
-{
-    return s_from_src[0] ? s_from_src : "--";
-}
 
 const char *mqtt_get_last_rx_topic(void)
 {
@@ -172,38 +125,12 @@ const char *mqtt_get_last_rx_data(void)
     return s_last_payload;
 }
 
-int mqtt_get_msg_count(void) { return s_msg_count; }
-
-const char *mqtt_get_msg_line(int idx)
-{
-    if (idx < 0 || idx >= s_msg_count) return "";
-    return s_msg_lines[idx];
-}
-
-void mqtt_advance_msg_idx(void)
-{
-    if (s_msg_count <= 0) return;
-    s_msg_idx = (s_msg_idx + 1) % s_msg_count;
-}
-
-int mqtt_get_msg_idx(void) { return s_msg_idx; }
-
-int mqtt_get_all_msg_lines(char out[][128], int max_lines)
-{
-    if (!out || max_lines <= 0) return 0;
-    int cnt = s_msg_count < max_lines ? s_msg_count : max_lines;
-    for (int i = 0; i < cnt; i++) {
-        strncpy(out[i], s_msg_lines[i], 127);
-        out[i][127] = '\0';
-    }
-    return cnt;
-}
-
 static int hmac_sha256_hex(const char *key, size_t key_len,
                            const char *msg, size_t msg_len,
                            char *out, size_t out_size)
 {
     if (out_size < 65) return -1;
+
     unsigned char digest[32];
     int ret = mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
                               (const unsigned char *)key, key_len,
@@ -211,7 +138,7 @@ static int hmac_sha256_hex(const char *key, size_t key_len,
                               digest);
     if (ret != 0) return -1;
     for (int i = 0; i < 32; i++) {
-        sprintf(out + i * 2, "%02x", digest[i]);
+        snprintf(out + i * 2, 3, "%02x", digest[i]);
     }
     out[64] = '\0';
     return 0;
@@ -225,16 +152,16 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         s_mqtt_connected = true;
         s_mqtt_state = MQTT_STATE_CONNECTED;
         led_notify_mqtt(true);
-        ESP_LOGI(TAG, "Connected!");
+        // ESP_LOGI(TAG, "Connected!");
         esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_USER, 0);
-        ESP_LOGI(TAG, "Subscribed: USER");
+        // ESP_LOGI(TAG, "Subscribed: USER");
         if (s_connect_sem) xSemaphoreGive(s_connect_sem);
         break;
     case MQTT_EVENT_DISCONNECTED:
         s_mqtt_connected = false;
         s_mqtt_state = MQTT_STATE_ERROR;
         led_notify_mqtt(false);
-        ESP_LOGW(TAG, "Disconnected");
+        // ESP_LOGI(TAG, "Disconnected");
         break;
     case MQTT_EVENT_DATA: {
         led_status_rx_notify();
@@ -245,13 +172,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         int dlen = event->data_len < MQTT_RX_DATA_LEN - 1 ? event->data_len : MQTT_RX_DATA_LEN - 1;
         memcpy(topic_buf, event->topic, tlen);
         memcpy(data_buf, event->data, dlen);
+        if (strchr(data_buf, '{')) {
+            ESP_LOGI(TAG, "RX %s", data_buf);
+        }
         if (!strstr(topic_buf, "_reply")) {
             rx_history_add(topic_buf, data_buf);
         }
 
         cJSON *root = cJSON_ParseWithLength(data_buf, (size_t)dlen);
         if (!root) {
-            ESP_LOGW(TAG, "RX not JSON, skip parse");
         } else {
             cJSON *j_id     = cJSON_GetObjectItemCaseSensitive(root, "DeviceID");
             cJSON *j_dir    = cJSON_GetObjectItemCaseSensitive(root, "Dir");
@@ -259,7 +188,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             cJSON *j_light  = cJSON_GetObjectItemCaseSensitive(root, "light");
             cJSON *j_power  = cJSON_GetObjectItemCaseSensitive(root, "power");
             cJSON *j_field1  = cJSON_GetObjectItemCaseSensitive(root, "Field1");
+            cJSON *j_field1_data = cJSON_GetObjectItemCaseSensitive(root, "Field1_data");
             cJSON *j_field2  = cJSON_GetObjectItemCaseSensitive(root, "Field2");
+            cJSON *j_field2_data = cJSON_GetObjectItemCaseSensitive(root, "Field2_data");
             cJSON *j_set1   = cJSON_GetObjectItemCaseSensitive(root, "Set1");
             if (!j_set1) j_set1 = cJSON_GetObjectItemCaseSensitive(root, "SetValue1");
             cJSON *j_set2   = cJSON_GetObjectItemCaseSensitive(root, "Set2");
@@ -270,7 +201,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             if (strncmp(id_str, DEVICE_ID_PREFIX, strlen(DEVICE_ID_PREFIX)) == 0) {
                 if (strcmp(dir_str, "C>D") == 0) {
-                    ESP_LOGI(TAG, "RX  %s", data_buf);
+                    // ESP_LOGI(TAG, "RX  %s", data_buf);
 
                     if (j_switch && cJSON_IsNumber(j_switch)) {
                         sw0_set((j_switch->valueint & 1) != 0);
@@ -289,20 +220,31 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     float ack_set2_val = 0; bool ack_set2_ok = false;
                     float ack_field1_val = 0; bool ack_field1_ok = false;
                     float ack_field2_val = 0; bool ack_field2_ok = false;
+                    int ack_field1_data_val = 0; bool ack_field1_data_ok = false;
+                    int ack_field2_data_val = 0; bool ack_field2_data_ok = false;
                     if (j_field1 && cJSON_IsNumber(j_field1)) {
                         ack_field1_val = (float)j_field1->valuedouble;
                         s_field_a = ack_field1_val;
                         ack_field1_ok = true;
+                    }
+                    if (j_field1_data && cJSON_IsNumber(j_field1_data)) {
+                        ack_field1_data_val = j_field1_data->valueint;
+                        s_field1_data = ack_field1_data_val;
+                        ack_field1_data_ok = true;
                     }
                     if (j_field2 && cJSON_IsNumber(j_field2)) {
                         ack_field2_val = (float)j_field2->valuedouble;
                         s_field_b = ack_field2_val;
                         ack_field2_ok = true;
                     }
+                    if (j_field2_data && cJSON_IsNumber(j_field2_data)) {
+                        ack_field2_data_val = j_field2_data->valueint;
+                        s_field2_data = ack_field2_data_val;
+                        ack_field2_data_ok = true;
+                    }
                     if (j_set1 && cJSON_IsNumber(j_set1)) {
                         ack_set1_val = (float)j_set1->valuedouble;
                         s_set_a = ack_set1_val;
-                        snprintf(s_wd_b, sizeof(s_wd_b), "%.2f", s_set_a);
                         ack_set1_ok = true;
                     }
                     if (j_set2 && cJSON_IsNumber(j_set2)) {
@@ -312,7 +254,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     }
 
                     s_msg_count = 0;
-                    s_msg_idx = 0;
                     cJSON *child = root->child;
                     while (child && s_msg_count < MQTT_MSG_MAX_LINES) {
                         const char *key = child->string ? child->string : "";
@@ -331,7 +272,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     {
                         float ack_temp = roundf(temp_sensor_get() * 10.0f) / 10.0f;
                         int   ack_rssi = wifi_is_connected() ? wifi_get_rssi() : -127;
-                        char ack_buf[384];
+                        char ack_buf[256];
                         int n = snprintf(ack_buf, sizeof(ack_buf),
                             "{\"DeviceID\":\"%s\",\"Dir\":\"ACK\",\"Temp\":%.1f,\"RSSI\":%d",
                             DEVICE_ID, ack_temp, ack_rssi);
@@ -343,8 +284,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             ",\"power\":%d", ack_power_val);
                         if (ack_field1_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
                             ",\"Field1\":%.2f", ack_field1_val);
+                        if (ack_field1_data_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
+                            ",\"Field1_data\":%d", ack_field1_data_val);
                         if (ack_field2_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
                             ",\"Field2\":%.2f", ack_field2_val);
+                        if (ack_field2_data_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
+                            ",\"Field2_data\":%d", ack_field2_data_val);
                         if (ack_set1_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
                             ",\"Set1\":%.2f", ack_set1_val);
                         if (ack_set2_ok) n += snprintf(ack_buf + n, sizeof(ack_buf) - n,
@@ -357,27 +302,23 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 } else if (strcmp(dir_str, "D>C") == 0) {
                 }
             } else {
-                ESP_LOGW(TAG, "Device ID mismatch: got '%s' expect prefix '%s'", id_str, DEVICE_ID_PREFIX);
+                // ESP_LOGI(TAG, "Device ID mismatch: got '%s' expect prefix '%s'", id_str, DEVICE_ID_PREFIX);
             }
             cJSON_Delete(root);
         }
 
         strncpy(s_last_payload, data_buf, sizeof(s_last_payload) - 1);
         s_last_payload[sizeof(s_last_payload) - 1] = '\0';
-        ui_notify_new_msg();
         break;
     }
     case MQTT_EVENT_ERROR:
-        ESP_LOGE(TAG, "MQTT ERROR");
+        // ESP_LOGI(TAG, "MQTT ERROR");
         if (event->error_handle) {
-            ESP_LOGE(TAG, "  type=%d rc=%d sock_errno=%d",
-                     event->error_handle->error_type,
-                     event->error_handle->connect_return_code,
-                     event->error_handle->esp_transport_sock_errno);
+            // ESP_LOGI(TAG, "  type=%d rc=%d sock_errno=%d", event->error_handle->error_type, event->error_handle->connect_return_code, event->error_handle->esp_transport_sock_errno);
         }
         break;
     case MQTT_EVENT_BEFORE_CONNECT:
-        ESP_LOGI(TAG, "Connecting to broker...");
+        // ESP_LOGI(TAG, "Connecting to broker...");
         break;
     default:
         break;
@@ -395,7 +336,7 @@ static esp_err_t mqtt_create_and_start_client(void)
              "%s|securemode=2,signmethod=hmacsha256,timestamp=%s|",
              ALIYUN_CLIENT_ID, timestamp);
 
-    char sign_content[192];
+    char sign_content[128];
     snprintf(sign_content, sizeof(sign_content),
              "clientId%sdeviceName%sproductKey%stimestamp%s",
              ALIYUN_CLIENT_ID, ALIYUN_DEVICE_NAME, ALIYUN_PRODUCT_KEY, timestamp);
@@ -403,17 +344,18 @@ static esp_err_t mqtt_create_and_start_client(void)
     if (hmac_sha256_hex(ALIYUN_DEVICE_SECRET, strlen(ALIYUN_DEVICE_SECRET),
                         sign_content, strlen(sign_content),
                         s_password, sizeof(s_password)) != 0) {
-        ESP_LOGE(TAG, "HMAC password generate failed");
+        // ESP_LOGI(TAG, "HMAC password generate failed");
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "=== Aliyun MQTT Config ===");
-    ESP_LOGI(TAG, "Broker   : %s", ALIYUN_BROKER_URI);
-    ESP_LOGI(TAG, "ClientID : %s", s_client_id);
-    ESP_LOGI(TAG, "Username : %s", ALIYUN_USERNAME);
-    ESP_LOGI(TAG, "Password : %s", s_password);
-    ESP_LOGI(TAG, "Time     : %s", ctime(&now_s));
-    ESP_LOGI(TAG, "========================");
+    // ESP_LOGI(TAG, "=== Aliyun MQTT Config ===");
+    // ESP_LOGI(TAG, "Broker   : %s", ALIYUN_BROKER_URI);
+    // ESP_LOGI(TAG, "ClientID : %s", s_client_id);
+    // ESP_LOGI(TAG, "Username : %s", ALIYUN_USERNAME);
+    // ESP_LOGI(TAG, "Password : %s", s_password);
+    // ESP_LOGI(TAG, "Secret   : %s", ALIYUN_DEVICE_SECRET);
+    // ESP_LOGI(TAG, "SignStr  : %s", sign_content);
+    // ESP_LOGI(TAG, "========================");
 
     if (s_mqtt_client) {
         esp_mqtt_client_destroy(s_mqtt_client);
@@ -430,12 +372,12 @@ static esp_err_t mqtt_create_and_start_client(void)
         .network.reconnect_timeout_ms = 5000,
         .network.timeout_ms = 10000,
         .network.disable_auto_reconnect = false,
-        .buffer.size = 1024,
-        .buffer.out_size = 1024,
+        .buffer.size = 512,
+        .buffer.out_size = 512,
     };
     s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     if (!s_mqtt_client) {
-        ESP_LOGE(TAG, "esp_mqtt_client_init FAILED");
+        // ESP_LOGI(TAG, "esp_mqtt_client_init FAILED");
         return ESP_FAIL;
     }
 
@@ -446,7 +388,7 @@ static esp_err_t mqtt_create_and_start_client(void)
     }
 
     if (esp_mqtt_client_start(s_mqtt_client) != ESP_OK) {
-        ESP_LOGE(TAG, "esp_mqtt_client_start FAILED");
+        // ESP_LOGI(TAG, "esp_mqtt_client_start FAILED");
         esp_mqtt_client_destroy(s_mqtt_client);
         s_mqtt_client = NULL;
         return ESP_FAIL;
@@ -458,7 +400,6 @@ static esp_err_t mqtt_create_and_start_client(void)
 static void mqtt_manager_task(void *arg)
 {
     int retry_count = 0;
-    int temp_tick = 0;
 
     while (1) {
         switch (s_mqtt_state) {
@@ -470,7 +411,7 @@ static void mqtt_manager_task(void *arg)
         case MQTT_STATE_WAIT_WIFI:
             if (wifi_is_connected()) {
                 retry_count = 0;
-                ESP_LOGI(TAG, "WiFi OK, checking time sync...");
+                // ESP_LOGI(TAG, "WiFi OK, checking time sync...");
                 s_mqtt_state = MQTT_STATE_WAIT_TIME;
             } else {
                 vTaskDelay(pdMS_TO_TICKS(2000));
@@ -480,16 +421,16 @@ static void mqtt_manager_task(void *arg)
         case MQTT_STATE_WAIT_TIME: {
             int waited = 0;
             time_t now_s = time(NULL);
-            ESP_LOGI(TAG, "Waiting for time sync...");
+            // ESP_LOGI(TAG, "Waiting for time sync...");
             while (now_s < 1000000000 && waited < 20000) {
                 vTaskDelay(pdMS_TO_TICKS(300));
                 waited += 300;
                 now_s = time(NULL);
             }
             if (now_s < 1000000000) {
-                ESP_LOGW(TAG, "Time still invalid after %dms, proceeding anyway", waited);
+                // ESP_LOGI(TAG, "Time still invalid after %dms, proceeding anyway", waited);
             } else {
-                ESP_LOGI(TAG, "Time synced after %dms: %s", waited, ctime(&now_s));
+                // ESP_LOGI(TAG, "Time synced after %dms: %s", waited, ctime(&now_s));
             }
             vTaskDelay(pdMS_TO_TICKS(2000));
             s_mqtt_state = MQTT_STATE_INIT;
@@ -499,24 +440,24 @@ static void mqtt_manager_task(void *arg)
         case MQTT_STATE_INIT:
             if (mqtt_create_and_start_client() == ESP_OK) {
                 s_mqtt_state = MQTT_STATE_CONNECTING;
-                ESP_LOGI(TAG, "Client started, waiting for connection...");
+                // ESP_LOGI(TAG, "Client started, waiting for connection...");
             } else {
-                ESP_LOGE(TAG, "Client create failed, retry in 5s...");
+                // ESP_LOGI(TAG, "Client create failed, retry in 5s...");
                 s_mqtt_state = MQTT_STATE_ERROR;
             }
             break;
 
         case MQTT_STATE_CONNECTING: {
             if (!wifi_is_connected()) {
-                ESP_LOGW(TAG, "WiFi lost while connecting, back to WAIT_WIFI");
+                // ESP_LOGI(TAG, "WiFi lost while connecting, back to WAIT_WIFI");
                 s_mqtt_state = MQTT_STATE_WAIT_WIFI;
                 break;
             }
             if (s_connect_sem && xSemaphoreTake(s_connect_sem, pdMS_TO_TICKS(MQTT_CONNECT_TIMEOUT_MS)) == pdTRUE) {
-                ESP_LOGI(TAG, "MQTT connected!");
+                // ESP_LOGI(TAG, "MQTT connected!");
                 s_mqtt_state = MQTT_STATE_CONNECTED;
             } else {
-                ESP_LOGW(TAG, "Connect timeout, retry...");
+                // ESP_LOGI(TAG, "Connect timeout, retry...");
                 if (s_mqtt_client) {
                     esp_mqtt_client_disconnect(s_mqtt_client);
                     vTaskDelay(pdMS_TO_TICKS(500));
@@ -528,32 +469,21 @@ static void mqtt_manager_task(void *arg)
 
         case MQTT_STATE_CONNECTED:
             if (!wifi_is_connected()) {
-                ESP_LOGW(TAG, "WiFi disconnected, waiting...");
+                // ESP_LOGI(TAG, "WiFi disconnected, waiting...");
                 s_mqtt_state = MQTT_STATE_WAIT_WIFI;
                 break;
             }
             if (!s_mqtt_connected) {
-                ESP_LOGW(TAG, "MQTT lost, recreate...");
+                // ESP_LOGI(TAG, "MQTT lost, recreate...");
                 s_mqtt_state = MQTT_STATE_ERROR;
                 break;
             }
-            temp_tick++;
-#if MQTT_PERIODIC_TX_ENABLED
-            if (temp_tick >= 15) {
-                temp_tick = 0;
-                char *frame = mqtt_build_tx_frame();
-                if (frame) {
-                    mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, frame, 0);
-                    free(frame);
-                }
-            }
-#endif
             vTaskDelay(pdMS_TO_TICKS(2000));
             break;
 
         case MQTT_STATE_ERROR:
             retry_count++;
-            ESP_LOGW(TAG, "Retry #%d, delay %dms...", retry_count, MQTT_RETRY_DELAY_MS);
+            // ESP_LOGI(TAG, "Retry #%d, delay %dms...", retry_count, MQTT_RETRY_DELAY_MS);
             if (s_mqtt_client) {
                 esp_mqtt_client_stop(s_mqtt_client);
                 vTaskDelay(pdMS_TO_TICKS(200));
@@ -580,8 +510,8 @@ void mqtt_init(int64_t start_time_ms)
     s_start_time_ms = start_time_ms;
     s_mqtt_state = MQTT_STATE_IDLE;
 
-    xTaskCreate(mqtt_manager_task, "mqtt_mgr", 4096, NULL, 4, NULL);
-    ESP_LOGI(TAG, "MQTT manager task started");
+    xTaskCreate(mqtt_manager_task, "mqtt_mgr", 3072, NULL, 4, NULL);
+    // ESP_LOGI(TAG, "MQTT manager task started");
 }
 
 esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)
@@ -593,27 +523,25 @@ esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)
     if (!topic || strlen(topic) == 0) return ESP_ERR_INVALID_ARG;
     if (!data) data = "";
 
-    int id = ++s_tx_msg_id;
     int len = strlen(data);
     int rc = esp_mqtt_client_publish(s_mqtt_client, topic, data, len, qos, 0);
     if (rc >= 0) {
-        ESP_LOGI(TAG, "TX id=%d %s", rc, data);
+        if (strchr(data, '{')) {
+            ESP_LOGI(TAG, "TX %s", data);
+        }
         led_status_tx_notify();
-        tx_history_add(topic, data, rc);
         return ESP_OK;
     } else {
-        ESP_LOGW(TAG, "TX failed rc=%d topic=%s", rc, topic);
+        // ESP_LOGI(TAG, "TX failed rc=%d topic=%s", rc, topic);
         return ESP_FAIL;
     }
 }
 
 esp_err_t mqtt_publish_user_update(const char *data)
 {
-    char *frame = mqtt_build_tx_frame();
-    if (!frame) return ESP_FAIL;
-    esp_err_t err = mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, frame, 0);
-    free(frame);
-    return err;
+    char frame[256];
+    if (!mqtt_build_tx_frame(frame, sizeof(frame))) return ESP_FAIL;
+    return mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, frame, 0);
 }
 
 esp_err_t mqtt_publish_aliyun_params(const char *params_json)
@@ -630,29 +558,4 @@ int mqtt_get_rx_entries(mqtt_rx_entry_t *out, int max_count)
         out[i] = s_rx_history[idx];
     }
     return count;
-}
-
-int mqtt_get_tx_entries(mqtt_tx_entry_t *out, int max_count)
-{
-    if (!out || max_count <= 0) return 0;
-    int count = s_tx_total < max_count ? s_tx_total : max_count;
-    for (int i = 0; i < count; i++) {
-        int idx = (s_tx_head - 1 - i + MQTT_TX_MAX_ENTRIES) % MQTT_TX_MAX_ENTRIES;
-        out[i] = s_tx_history[idx];
-    }
-    return count;
-}
-
-void mqtt_clear_rx_history(void)
-{
-    s_rx_head = 0;
-    s_rx_total = 0;
-    memset(s_rx_history, 0, sizeof(s_rx_history));
-}
-
-void mqtt_clear_tx_history(void)
-{
-    s_tx_head = 0;
-    s_tx_total = 0;
-    memset(s_tx_history, 0, sizeof(s_tx_history));
 }

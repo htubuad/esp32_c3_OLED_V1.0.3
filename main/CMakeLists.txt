@@ -7,11 +7,9 @@ idf_component_register(SRCS "main.c"
                     "../components/sntp_sync.c"
                     "../components/mqtt_aliyun.c"
                     "../components/web_server.c"
-                    "../components/oled.c"
                     "../components/delay.c"
-                    "../components/ui_dashboard.c"
                     INCLUDE_DIRS "." "../components"
-                    REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_driver_gpio esp_driver_ledc esp_http_server esp_timer mqtt mbedtls esp_driver_tsens heap lwip cjson esp_driver_i2c)
+                    REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_driver_gpio esp_driver_ledc esp_http_server esp_timer mqtt mbedtls esp_driver_tsens heap lwip cjson)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE LWIP_MDNS_RESPONDER=1 MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS)
 

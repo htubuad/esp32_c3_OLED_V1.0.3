@@ -15,8 +15,6 @@
 #include "sntp_sync.h"
 #include "mqtt_aliyun.h"
 #include "web_server.h"
-#include "oled.h"
-#include "ui_dashboard.h"
 
 static const char *TAG = "MAIN";
 
@@ -25,9 +23,9 @@ static bool s_services_started = false;
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "==================================");
-    ESP_LOGI(TAG, " ESP32-C3 Firmware v%s", APP_VERSION);
-    ESP_LOGI(TAG, "==================================");
+    // ESP_LOGI(TAG, "==================================");
+    // ESP_LOGI(TAG, " ESP32-C3 Firmware v%s", APP_VERSION);
+    // ESP_LOGI(TAG, "==================================");
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -40,12 +38,6 @@ void app_main(void)
 
     switch_init();
     led_init();
-    OLED_Init();
-    OLED_Clear();
-    OLED_ShowStringSize(0, 0, APP_NAME, OLED_SIZE_16, false);
-    OLED_ShowStringSize(0, 16, APP_VERSION, OLED_SIZE_16, false);
-    OLED_ShowStringSize(0, 32, "Booting...", OLED_SIZE_16, false);
-    OLED_Update();
 
     ESP_ERROR_CHECK(temp_sensor_init());
 
@@ -58,19 +50,18 @@ void app_main(void)
     }
 
     start_webserver(s_start_time_ms);
-    ui_dashboard_start();
 
-    ESP_LOGI(TAG, "=== HEAP STATUS ===");
-    ESP_LOGI(TAG, "Free heap: %d bytes", (int)esp_get_free_heap_size());
-    ESP_LOGI(TAG, "Internal free: %d bytes", (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    ESP_LOGI(TAG, "Largest free block: %d bytes", (int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-    ESP_LOGI(TAG, "==================");
+    // ESP_LOGI(TAG, "=== HEAP STATUS ===");
+    // ESP_LOGI(TAG, "Free heap: %d bytes", (int)esp_get_free_heap_size());
+    // ESP_LOGI(TAG, "Internal free: %d bytes", (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    // ESP_LOGI(TAG, "Largest free block: %d bytes", (int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    // ESP_LOGI(TAG, "==================");
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(5000));
 
         if (wifi_is_connected() && !s_services_started) {
-            ESP_LOGI(TAG, "WiFi connected, starting services...");
+            // ESP_LOGI(TAG, "WiFi connected, starting services...");
             sntp_init_and_sync();
             mqtt_init(s_start_time_ms);
             s_services_started = true;

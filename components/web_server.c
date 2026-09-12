@@ -19,7 +19,7 @@ static const char *TAG = "HTTP";
 static int64_t s_start_time_ms = 0;
 static httpd_handle_t s_server = NULL;
 
-#define HTML_BUF_SIZE  16384
+#define HTML_BUF_SIZE  12288
 
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
@@ -30,7 +30,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
 
-    const char *device_status = "ESP32-C3 已连接";
+    const char *device_status = " 已连接";
     const char *device_state_class = "ok";
     const char *device_state_text = "在线";
 
@@ -62,7 +62,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<!DOCTYPE html><html lang='zh-CN'>"
         "<head><meta charset='UTF-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>ESP32-C3 物联网控制面板</title>"
+        "<title>物联网控制台</title>"
         "<style>"
         "body{font-family:-apple-system,Segoe UI,sans-serif;margin:0;padding:20px;background:#f0f2f5;color:#333}"
         ".card{max-width:620px;margin:0 auto;background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,.1)}"
@@ -91,7 +91,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "</style></head><body>"
 
         "<div class='card'>"
-        "<h1>ESP32-C3 物联网控制台</h1>"
+        "<h1>物联网控制台</h1>"
         "<div class='sub'>%s</div>"
 
         "<div class='tabs'>"
@@ -138,7 +138,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<div id='msg-lines-box' style='background:#1e1e2e;color:#cdd6f4;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:13px;min-height:60px;max-height:200px;overflow-y:auto;word-break:break-all;white-space:pre-wrap'>暂无数据</div>"
 
         "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>发送 (标准报文)</h3>"
-        "<textarea id='mqtt-send-data' rows='4' placeholder='JSON报文' style='width:100%%;box-sizing:border-box;font-family:monospace;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:4px;resize:vertical'>{\"DeviceID\":\"001_V1.2.0\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field2\":0.00,\"Set1\":0.00,\"Set2\":0.00}</textarea>"
+        "<textarea id='mqtt-send-data' rows='4' placeholder='JSON报文' style='width:100%%;box-sizing:border-box;font-family:monospace;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:4px;resize:vertical'>{\"DeviceID\":\"001_" APP_VERSION "\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field1_data\":0,\"Field2\":0.0,\"Field2_data\":0.0}</textarea>"
         "<div style='margin-top:12px'>"
         "<button class='btn btn-on' onclick='mqttSend()'>发送到阿里云</button>"
         "<button class='btn' style='background:#888' onclick='resetSendData()'>恢复默认</button>"
@@ -160,7 +160,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "function stopRefresh(){if(t){clearInterval(t);t=null;}}"
         "function refresh(){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var t=document.getElementById('val-temp');var l=document.getElementById('val-led');if(t)t.textContent=j.temp!=null?j.temp.toFixed(1)+' C':'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}var box=document.getElementById('msg-lines-box');if(box){var h=j.history||[];var html='';if(!h.length){html='暂无数据';}else{var e=h[0];var tp=(e.topic||'').split('/');var name=tp[tp.length-1]||'topic';html+='<div style=\"background:#313244;border-radius:4px;padding:6px 8px;margin-bottom:6px\"><div style=\"color:#89b4fa;font-weight:700;font-size:14px\">'+name+'</div><div style=\"color:#f9e2af;word-break:break-all\">'+(e.data||'')+'</div></div>';for(var i=1;i<h.length;i++){var x=h[i];var tp2=(x.topic||'').split('/');var n2=tp2[tp2.length-1]||'topic';html+='<div style=\"padding:2px 0;color:#6c7086;font-size:12px;border-bottom:1px dashed #45475a\"><span>'+n2+'</span> <span style=\"color:#a6adc8\">'+(x.data||'')+'</span></div>';}}var curSig=h.length?(h[0].topic||'')+'|'+(h[0].data||''):'';if(curSig!==_lastSig){box.innerHTML=html;box.scrollTop=0;}_lastSig=curSig;}}).catch(function(){});}"
         "(function(){var h=location.hash.replace('#','');if(h){var b=document.querySelector('.tab-btn[onclick*=\"'+h+'\"]');switchTab(b,h);}})();"
-        "function resetSendData(){document.getElementById('mqtt-send-data').value='{\"DeviceID\":\"001_V1.2.0\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field2\":0.00,\"Set1\":0.00,\"Set2\":0.00}';}"
+        "function resetSendData(){document.getElementById('mqtt-send-data').value='{\"DeviceID\":\"001_" APP_VERSION "\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field1_data\":0,\"Field2\":0.0,\"Field2_data\":0.0}';}"
         "async function mqttSend(){"
         "var d=document.getElementById('mqtt-send-data').value.trim();"
         "var m=document.getElementById('mqtt-send-msg');"
@@ -195,8 +195,8 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "try{"
         "var r=await fetch('/api/wifi/configure',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ssid='+encodeURIComponent(s)+'&password='+encodeURIComponent(p)});"
         "var j=await r.json();"
-        "if(j.success&&j.connecting){m.className='message success';m.innerHTML='连接中...<br>新IP: '+j.ip+'<br>请切换到路由器WiFi';}"
-        "else if(j.success){m.className='message success';m.innerHTML='已保存';}"
+        "if(j.success&&j.connecting){m.className='message success';m.textContent='WiFi 配置成功，正在连接路由器...';}"
+        "else if(j.success){m.className='message success';m.textContent='已保存';}"
         "else{m.className='message error';m.textContent='失败: '+j.error;}"
         "}catch(e){m.className='message error';m.textContent='网络错误';}"
         "}"
@@ -206,6 +206,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "if(j.success){alert('已清除！\\n热点: '+j.ap_ssid+'\\nIP: '+j.ap_ip);location.reload();}}"
         "catch(e){alert('网络错误');}}"
         "</script>"
+        "<div style='text-align:center;color:#aaa;font-size:12px;margin-top:16px'>" APP_VERSION "</div>"
         "</div></body></html>",
 
         device_status,
@@ -329,13 +330,11 @@ static esp_err_t wifi_configure_handler(httpd_req_t *req)
     snprintf(cred.password, sizeof(cred.password), "%s", password);
     wifi_cred_save(&cred);
 
-    esp_err_t err = wifi_try_connect(ssid, password);
+    wifi_request_connect(ssid, password);
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "success", err == ESP_OK);
-    cJSON_AddBoolToObject(root, "connecting", err == ESP_OK);
-    cJSON_AddStringToObject(root, "ip", wifi_get_ip());
-    if (err != ESP_OK) cJSON_AddStringToObject(root, "error", "connect failed");
+    cJSON_AddBoolToObject(root, "success", true);
+    cJSON_AddBoolToObject(root, "connecting", true);
 
     char *out = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
@@ -348,11 +347,11 @@ static esp_err_t wifi_configure_handler(httpd_req_t *req)
 static esp_err_t wifi_clear_handler(httpd_req_t *req)
 {
     wifi_cred_clear();
-    wifi_start_ap("ESP32-C3-Setup");
+    wifi_start_ap("DEV-MGT_26001");
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "success", true);
-    cJSON_AddStringToObject(root, "ap_ssid", "ESP32-C3-Setup");
+    cJSON_AddStringToObject(root, "ap_ssid", "DEV-MGT_26001");
     cJSON_AddStringToObject(root, "ap_ip", "192.168.4.1");
 
     char *out = cJSON_PrintUnformatted(root);
@@ -387,6 +386,52 @@ static esp_err_t mqtt_data_handler(httpd_req_t *req)
     httpd_resp_send(req, out, -1);
     free(out);
     cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static const char *s_portal_html =
+    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+    "<meta http-equiv='refresh' content='0;url=/#wifi'>"
+    "<title>Gateway</title></head><body>"
+    "<p>Redirecting to <a href='/'>setup page</a>...</p>"
+    "</body></html>";
+
+static esp_err_t handler_generate_204(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, s_portal_html, -1);
+    return ESP_OK;
+}
+
+static esp_err_t handler_ncsi(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, s_portal_html, -1);
+    return ESP_OK;
+}
+
+static esp_err_t handler_hotspot_detect(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, s_portal_html, -1);
+    return ESP_OK;
+}
+
+static esp_err_t handler_mmtls(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, s_portal_html, -1);
+    return ESP_OK;
+}
+
+static esp_err_t handler_favicon(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -452,7 +497,7 @@ void start_webserver(int64_t start_time_ms)
     config.max_uri_handlers = 16;
 
     if (httpd_start(&s_server, &config) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start webserver");
+        // ESP_LOGI(TAG, "Failed to start webserver");
         return;
     }
 
@@ -468,6 +513,13 @@ void start_webserver(int64_t start_time_ms)
     httpd_uri_t uri_mqtt_data = {.uri = "/api/mqtt/data", .method = HTTP_GET, .handler = mqtt_data_handler};
     httpd_uri_t uri_mqtt_send = {.uri = "/api/mqtt/send", .method = HTTP_POST, .handler = mqtt_send_handler};
 
+    httpd_uri_t uri_gen204 = {.uri = "/generate_204", .method = HTTP_GET, .handler = handler_generate_204};
+    httpd_uri_t uri_ncsi_txt = {.uri = "/ncsi.txt", .method = HTTP_GET, .handler = handler_ncsi};
+    httpd_uri_t uri_connecttest = {.uri = "/connecttest.txt", .method = HTTP_GET, .handler = handler_ncsi};
+    httpd_uri_t uri_hotspot = {.uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = handler_hotspot_detect};
+    httpd_uri_t uri_mmtls = {.uri = "/mmtls/", .method = HTTP_GET, .handler = handler_mmtls};
+    httpd_uri_t uri_favicon = {.uri = "/favicon.ico", .method = HTTP_GET, .handler = handler_favicon};
+
     httpd_register_uri_handler(s_server, &uri_root);
     httpd_register_uri_handler(s_server, &uri_status);
     httpd_register_uri_handler(s_server, &uri_led);
@@ -477,10 +529,16 @@ void start_webserver(int64_t start_time_ms)
     httpd_register_uri_handler(s_server, &uri_wifi_clr);
     httpd_register_uri_handler(s_server, &uri_mqtt_data);
     httpd_register_uri_handler(s_server, &uri_mqtt_send);
+    httpd_register_uri_handler(s_server, &uri_gen204);
+    httpd_register_uri_handler(s_server, &uri_ncsi_txt);
+    httpd_register_uri_handler(s_server, &uri_connecttest);
+    httpd_register_uri_handler(s_server, &uri_hotspot);
+    httpd_register_uri_handler(s_server, &uri_mmtls);
+    httpd_register_uri_handler(s_server, &uri_favicon);
 
     httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND, err_404_handler);
 
-    ESP_LOGI(TAG, "Web server started");
+    // ESP_LOGI(TAG, "Web server started");
 }
 
 void stop_webserver(void)

@@ -26,7 +26,7 @@ static void dns_task(void *arg)
     struct sockaddr_in from = {0};
     socklen_t from_len = sizeof(from);
 
-    ESP_LOGI(TAG, "DNS server task started on port %d (core %d)", DNS_PORT, DNS_CORE);
+    // ESP_LOGI(TAG, "DNS server task started on port %d (core %d)", DNS_PORT, DNS_CORE);
 
     while (s_running) {
         fd_set readfds;
@@ -51,9 +51,6 @@ static void dns_task(void *arg)
         }
         if (q_offset + 4 > len) continue;
 
-        uint16_t qtype = (s_pkt[q_offset] << 8) | s_pkt[q_offset + 1];
-        uint16_t qclass = (s_pkt[q_offset + 2] << 8) | s_pkt[q_offset + 3];
-
         int question_end = q_offset + 4;
 
         s_pkt[2] = 0x80; s_pkt[3] = 0x80;
@@ -63,21 +60,19 @@ static void dns_task(void *arg)
 
         int out_offset = question_end;
 
-        if (qtype == 1 && qclass == 1) {
-            s_pkt[out_offset++] = 0xC0; s_pkt[out_offset++] = 0x0C;
-            s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x01;
-            s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x01;
-            s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x00;
-            s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x3C;
-            s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x04;
-            s_pkt[out_offset++] = 192; s_pkt[out_offset++] = 168;
-            s_pkt[out_offset++] = 4; s_pkt[out_offset++] = 1;
-        }
+        s_pkt[out_offset++] = 0xC0; s_pkt[out_offset++] = 0x0C;
+        s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x01;
+        s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x01;
+        s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x00;
+        s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x3C;
+        s_pkt[out_offset++] = 0x00; s_pkt[out_offset++] = 0x04;
+        s_pkt[out_offset++] = 192; s_pkt[out_offset++] = 168;
+        s_pkt[out_offset++] = 4; s_pkt[out_offset++] = 1;
 
         sendto(s_sock, s_pkt, out_offset, 0, (struct sockaddr *)&from, from_len);
     }
 
-    ESP_LOGI(TAG, "DNS task exiting");
+    // ESP_LOGI(TAG, "DNS task exiting");
     vTaskDelete(NULL);
     s_task = NULL;
 }
@@ -86,7 +81,7 @@ esp_err_t dns_server_start(void)
 {
     if (s_running) return ESP_OK;
 
-    ESP_LOGI(TAG, "Starting DNS server...");
+    // ESP_LOGI(TAG, "Starting DNS server...");
 
     int retry;
     for (retry = 0; retry < 5; retry++) {
@@ -94,7 +89,7 @@ esp_err_t dns_server_start(void)
 
         s_sock = socket(AF_INET, SOCK_DGRAM, 0);
         if (s_sock < 0) {
-            ESP_LOGW(TAG, "socket() failed (attempt %d/5), errno=%d", retry + 1, errno);
+            // ESP_LOGI(TAG, "socket() failed (attempt %d/5), errno=%d", retry + 1, errno);
             continue;
         }
 
@@ -104,19 +99,18 @@ esp_err_t dns_server_start(void)
         addr.sin_port = htons(DNS_PORT);
 
         if (bind(s_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            ESP_LOGW(TAG, "bind() failed port %d (attempt %d/5), errno=%d",
-                     DNS_PORT, retry + 1, errno);
+            // ESP_LOGI(TAG, "bind() failed port %d (attempt %d/5), errno=%d", DNS_PORT, retry + 1, errno);
             close(s_sock);
             s_sock = -1;
             continue;
         }
 
-        ESP_LOGI(TAG, "UDP socket bound on port %d", DNS_PORT);
+        // ESP_LOGI(TAG, "UDP socket bound on port %d", DNS_PORT);
         break;
     }
 
     if (s_sock < 0) {
-        ESP_LOGE(TAG, "Failed to create/bind UDP socket after 5 attempts");
+        // ESP_LOGI(TAG, "Failed to create/bind UDP socket after 5 attempts");
         return ESP_FAIL;
     }
 
@@ -124,21 +118,21 @@ esp_err_t dns_server_start(void)
     BaseType_t ok = xTaskCreatePinnedToCore(dns_task, "dns_srv", DNS_STACK_SIZE,
                                              NULL, DNS_PRIO, &s_task, DNS_CORE);
     if (!ok) {
-        ESP_LOGE(TAG, "Failed to create DNS task");
+        // ESP_LOGI(TAG, "Failed to create DNS task");
         s_running = false;
         close(s_sock);
         s_sock = -1;
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "DNS server started (all queries -> 192.168.4.1)");
+    // ESP_LOGI(TAG, "DNS server started (all queries -> 192.168.4.1)");
     return ESP_OK;
 }
 
 void dns_server_stop(void)
 {
     if (!s_running) return;
-    ESP_LOGI(TAG, "Stopping DNS server...");
+    // ESP_LOGI(TAG, "Stopping DNS server...");
     s_running = false;
     if (s_sock >= 0) {
         shutdown(s_sock, SHUT_RDWR);
@@ -148,5 +142,5 @@ void dns_server_stop(void)
     if (s_task) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    ESP_LOGI(TAG, "DNS server stopped");
+    // ESP_LOGI(TAG, "DNS server stopped");
 }

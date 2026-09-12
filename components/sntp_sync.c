@@ -10,18 +10,18 @@ static bool s_sntp_initialized = false;
 
 static void sntp_time_sync_cb(struct timeval *tv)
 {
-    ESP_LOGI(TAG, "Time synced: %ld", (long)tv->tv_sec);
+    // ESP_LOGI(TAG, "Time synced: %ld", (long)tv->tv_sec);
 }
 
 void sntp_init_and_sync(void)
 {
     if (s_sntp_initialized) {
-        ESP_LOGW(TAG, "SNTP already initialized, skipping");
+        // ESP_LOGI(TAG, "SNTP already initialized, skipping");
         return;
     }
     s_sntp_initialized = true;
 
-    ESP_LOGI(TAG, "Syncing time...");
+    // ESP_LOGI(TAG, "Syncing time...");
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "ntp.aliyun.com");
     esp_sntp_set_time_sync_notification_cb(sntp_time_sync_cb);
@@ -37,5 +37,5 @@ void sntp_init_and_sync(void)
         waited += 200;
         now = time(NULL);
     }
-    ESP_LOGI(TAG, "Time: %s", ctime(&now));
+    // ESP_LOGI(TAG, "Time: %s", ctime(&now));
 }
