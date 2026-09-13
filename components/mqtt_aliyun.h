@@ -8,8 +8,8 @@
 #define ALIYUN_PRODUCT_KEY   "k1jrhJxxEiu"
 #define ALIYUN_DEVICE_NAME   "esp32_s3_new"
 
-#define DEVICE_ID           "001_" APP_VERSION
-#define DEVICE_ID_PREFIX    "001"
+#define DEVICE_ID           "26001_" APP_VERSION
+#define DEVICE_ID_PREFIX    "26001"
 
 #define MQTT_RX_MAX_ENTRIES 8
 #define MQTT_RX_TOPIC_LEN   64
@@ -30,5 +30,12 @@ const char *mqtt_get_last_rx_data(void);
 esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos);
 esp_err_t mqtt_publish_aliyun_params(const char *params_json);
 int mqtt_get_rx_entries(mqtt_rx_entry_t *out, int max_count);
+
+float mqtt_get_field_a(void);
+float mqtt_get_field_b(void);
+float mqtt_get_set_a(void);
+float mqtt_get_set_b(void);
+int   mqtt_get_field1_data(void);
+int   mqtt_get_field2_data(void);
 
 #endif

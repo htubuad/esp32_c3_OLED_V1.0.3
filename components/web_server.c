@@ -145,12 +145,18 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<div id='tab-mqtt' class='tab'>"
         "<div class='row'><span class='label'>温度</span><span class='val' id='val-temp'>--</span></div>"
         "<div class='row'><span class='label'>LED</span><span class='val' id='val-led'>--</span></div>"
+        "<div class='row'><span class='label'>Field1</span><span class='val' id='val-field1'>--</span></div>"
+        "<div class='row'><span class='label'>Field1_data</span><span class='val' id='val-field1-data'>--</span></div>"
+        "<div class='row'><span class='label'>Field2</span><span class='val' id='val-field2'>--</span></div>"
+        "<div class='row'><span class='label'>Field2_data</span><span class='val' id='val-field2-data'>--</span></div>"
+        "<div class='row'><span class='label'>Set1</span><span class='val' id='val-set1'>--</span></div>"
+        "<div class='row'><span class='label'>Set2</span><span class='val' id='val-set2'>--</span></div>"
 
         "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>最新接收数据</h3>"
         "<div id='msg-lines-box' style='background:#1e1e2e;color:#cdd6f4;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:13px;min-height:60px;max-height:200px;overflow-y:auto;word-break:break-all;white-space:pre-wrap'>暂无数据</div>"
 
         "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>发送 (标准报文)</h3>"
-        "<textarea id='mqtt-send-data' rows='4' placeholder='JSON报文' style='width:100%%;box-sizing:border-box;font-family:monospace;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:4px;resize:vertical'>{\"DeviceID\":\"001_" APP_VERSION "\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field1_data\":0,\"Field2\":0.0,\"Field2_data\":0.0}</textarea>"
+        "<textarea id='mqtt-send-data' rows='4' placeholder='JSON报文' style='width:100%%;box-sizing:border-box;font-family:monospace;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:4px;resize:vertical'>{\"DeviceID\":\"26001_" APP_VERSION "\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field1_data\":0,\"Field2\":0.0,\"Field2_data\":0.0}</textarea>"
         "<div style='margin-top:12px'>"
         "<button class='btn btn-on' onclick='mqttSend()'>发送到阿里云</button>"
         "<button class='btn' style='background:#888' onclick='resetSendData()'>恢复默认</button>"
@@ -172,11 +178,11 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "function startRefresh(){if(t)return;t=setInterval(refresh,1000);refresh();}"
         "function stopRefresh(){if(t){clearInterval(t);t=null;}}"
         "function refresh(){"
-        "if(_curTab==='mqtt'){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var tt=document.getElementById('val-temp');var l=document.getElementById('val-led');if(tt)tt.textContent=j.temp!=null?j.temp.toFixed(1)+' C':'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}var box=document.getElementById('msg-lines-box');if(box){var h=j.history||[];var html='';if(!h.length){html='暂无数据';}else{var e=h[0];var tp=(e.topic||'').split('/');var nm=tp[tp.length-1]||'topic';html+='<div style=\"background:#313244;border-radius:4px;padding:6px 8px;margin-bottom:6px\"><div style=\"color:#89b4fa;font-weight:700;font-size:14px\">'+nm+'</div><div style=\"color:#f9e2af;word-break:break-all\">'+(e.data||'')+'</div></div>';for(var i=1;i<h.length;i++){var x=h[i];var tp2=(x.topic||'').split('/');var n2=tp2[tp2.length-1]||'topic';html+='<div style=\"padding:2px 0;color:#6c7086;font-size:12px;border-bottom:1px dashed #45475a\"><span>'+n2+'</span> <span style=\"color:#a6adc8\">'+(x.data||'')+'</span></div>';}}var curSig=h.length?(h[0].topic||'')+'|'+(h[0].data||''):'';if(curSig!==_lastSig){box.innerHTML=html;box.scrollTop=0;}_lastSig=curSig;}}).catch(function(){});}"
+        "if(_curTab==='mqtt'){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var tt=document.getElementById('val-temp');var l=document.getElementById('val-led');if(tt)tt.textContent=j.temp!=null?j.temp.toFixed(1)+' C':'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}var el;el=document.getElementById('val-field1');if(el)el.textContent=j.field_a!=null?j.field_a.toFixed(2):'--';el=document.getElementById('val-field1-data');if(el)el.textContent=j.field1_data!=null?j.field1_data:'--';el=document.getElementById('val-field2');if(el)el.textContent=j.field_b!=null?j.field_b.toFixed(2):'--';el=document.getElementById('val-field2-data');if(el)el.textContent=j.field2_data!=null?j.field2_data:'--';el=document.getElementById('val-set1');if(el)el.textContent=j.set_a!=null?j.set_a.toFixed(2):'--';el=document.getElementById('val-set2');if(el)el.textContent=j.set_b!=null?j.set_b.toFixed(2):'--';var box=document.getElementById('msg-lines-box');if(box){var h=j.history||[];var html='';if(!h.length){html='暂无数据';}else{var e=h[0];var tp=(e.topic||'').split('/');var nm=tp[tp.length-1]||'topic';html+='<div style=\"background:#313244;border-radius:4px;padding:6px 8px;margin-bottom:6px\"><div style=\"color:#89b4fa;font-weight:700;font-size:14px\">'+nm+'</div><div style=\"color:#f9e2af;word-break:break-all\">'+(e.data||'')+'</div></div>';for(var i=1;i<h.length;i++){var x=h[i];var tp2=(x.topic||'').split('/');var n2=tp2[tp2.length-1]||'topic';html+='<div style=\"padding:2px 0;color:#6c7086;font-size:12px;border-bottom:1px dashed #45475a\"><span>'+n2+'</span> <span style=\"color:#a6adc8\">'+(x.data||'')+'</span></div>';}}var curSig=h.length?(h[0].topic||'')+'|'+(h[0].data||''):'';if(curSig!==_lastSig){box.innerHTML=html;box.scrollTop=0;}_lastSig=curSig;}}).catch(function(){});}"
         "else if(_curTab==='wifi'){fetch('/status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var el=document.getElementById('wifi-status-text');if(el){el.textContent=j.wifi_status||'--';}}).catch(function(){});}"
         "}"
         "(function(){var h=location.hash.replace('#','');if(h){var b=document.querySelector('.tab-btn[onclick*=\"'+h+'\"]');switchTab(b,h);}})();"
-        "function resetSendData(){document.getElementById('mqtt-send-data').value='{\"DeviceID\":\"001_" APP_VERSION "\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field1_data\":0,\"Field2\":0.0,\"Field2_data\":0.0}';}"
+        "function resetSendData(){document.getElementById('mqtt-send-data').value='{\"DeviceID\":\"26001_" APP_VERSION "\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field1_data\":0,\"Field2\":0.0,\"Field2_data\":0.0}';}"
         "async function mqttSend(){"
         "var d=document.getElementById('mqtt-send-data').value.trim();"
         "var m=document.getElementById('mqtt-send-msg');"
@@ -378,6 +384,12 @@ static esp_err_t mqtt_data_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "led", switch1_get());
     cJSON_AddStringToObject(root, "last_topic", mqtt_get_last_rx_topic());
     cJSON_AddStringToObject(root, "last_data", mqtt_get_last_rx_data());
+    cJSON_AddNumberToObject(root, "field_a", mqtt_get_field_a());
+    cJSON_AddNumberToObject(root, "field_b", mqtt_get_field_b());
+    cJSON_AddNumberToObject(root, "set_a",   mqtt_get_set_a());
+    cJSON_AddNumberToObject(root, "set_b",   mqtt_get_set_b());
+    cJSON_AddNumberToObject(root, "field1_data", mqtt_get_field1_data());
+    cJSON_AddNumberToObject(root, "field2_data", mqtt_get_field2_data());
 
     mqtt_rx_entry_t history[5];
     int hcnt = mqtt_get_rx_entries(history, 5);

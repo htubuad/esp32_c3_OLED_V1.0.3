@@ -278,7 +278,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 } else if (strcmp(dir_str, "D>C") == 0) {
                 }
             } else {
-                // ESP_LOGI(TAG, "Device ID mismatch: got '%s' expect prefix '%s'", id_str, DEVICE_ID_PREFIX);
             }
             cJSON_Delete(root);
         }
@@ -527,3 +526,10 @@ int mqtt_get_rx_entries(mqtt_rx_entry_t *out, int max_count)
     }
     return count;
 }
+
+float mqtt_get_field_a(void)     { return s_field_a; }
+float mqtt_get_field_b(void)     { return s_field_b; }
+float mqtt_get_set_a(void)       { return s_set_a; }
+float mqtt_get_set_b(void)       { return s_set_b; }
+int   mqtt_get_field1_data(void) { return s_field1_data; }
+int   mqtt_get_field2_data(void) { return s_field2_data; }
