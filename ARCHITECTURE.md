@@ -537,11 +537,11 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 | phy_init | 0xF000 | 4 KB | RF 校准数据 |
 | ota_0 | 0x10000 | **1984 KB** | 固件槽位 0（主运行） |
 | ota_1 | 0x200000 | **1984 KB** | 固件槽位 1（OTA 备用） |
-| ota_data | 0x3F0000 | 64 KB | OTA 状态（双缓冲防掉电） |
+| ota_data | 0x3F0000 | **8 KB** | OTA 状态（ESP-IDF 强制 0x2000） |
 
 ### 说明
 
 - 固件实际大小约 1067 KB，每个 OTA 分区 1984 KB，剩余 **917 KB** 给后续功能扩展
-- ota_data 从 8 KB 扩大到 64 KB，避免 OTA 过程掉电损坏
-- Flash 空间 100% 利用，无浪费
+- ota_data 必须是 0x2000（ESP-IDF 硬性要求），不可更改
+- Flash 尾部约 896 KB 未使用（ota_0/ota_1 已最大化）
 - ⚠️ 改分区表需 `idf.py erase-flash` 全片擦除，NVS 清空
