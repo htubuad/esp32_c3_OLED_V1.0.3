@@ -524,3 +524,24 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 4. **热切换不 stop WiFi**：`do_runtime_switch()` 只 disconnect + set_config + connect，AP 和 Web Server 全程不掉线
 5. **retry_timer 防护逻辑**：如果 `s_sta_connect_allowed && s_sta_ever_connected` 已经成立（即时重连在工作），定时器只重新 schedule，不重复触发 connect
 6. **CMD_OPEN_AP 恢复 STA**：从 STA_ONLY 状态打开 AP 时，自动从 NVS 加载凭证并发起 STA 连接
+
+---
+
+## 16. Flash 分区表（partitions.csv）
+
+芯片：ESP32-C3 | Flash：4 MB
+
+| 分区 | 偏移 | 大小 | 用途 |
+|------|------|------|------|
+| nvs | 0x9000 | 24 KB | WiFi 凭证等非易失存储 |
+| phy_init | 0xF000 | 4 KB | RF 校准数据 |
+| ota_0 | 0x10000 | **1984 KB** | 固件槽位 0（主运行） |
+| ota_1 | 0x200000 | **1984 KB** | 固件槽位 1（OTA 备用） |
+| ota_data | 0x3F0000 | 64 KB | OTA 状态（双缓冲防掉电） |
+
+### 说明
+
+- 固件实际大小约 1067 KB，每个 OTA 分区 1984 KB，剩余 **917 KB** 给后续功能扩展
+- ota_data 从 8 KB 扩大到 64 KB，避免 OTA 过程掉电损坏
+- Flash 空间 100% 利用，无浪费
+- ⚠️ 改分区表需 `idf.py erase-flash` 全片擦除，NVS 清空
