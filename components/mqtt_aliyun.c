@@ -28,9 +28,11 @@ static const char *TAG = "ALIYUN";
 #define ALIYUN_BROKER_URI    "mqtt://" ALIYUN_BROKER_HOST ":1883"
 #define ALIYUN_USERNAME      ALIYUN_DEVICE_NAME "&" ALIYUN_PRODUCT_KEY
 
-#define ALIYUN_TOPIC_USER        "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/get"
-#define ALIYUN_TOPIC_USER_UPDATE "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/update"
-#define ALIYUN_TOPIC_OTA_UPGRADE "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/ota/upgrade"
+#define ALIYUN_TOPIC_USER          "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/get"
+#define ALIYUN_TOPIC_USER_UPDATE   "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/update"
+#define ALIYUN_TOPIC_OTA_UPGRADE   "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/ota/upgrade"
+#define ALIYUN_TOPIC_OTA_UPGRADE_V2 "/ota/device/upgrade/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME
+#define ALIYUN_TOPIC_OTA_INFORM    "/ota/device/inform/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME
 
 #define MQTT_CONNECT_TIMEOUT_MS  15000
 #define MQTT_RETRY_DELAY_MS      5000
@@ -122,6 +124,16 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         led_notify_mqtt(true);
         esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_USER, 0);
         esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_OTA_UPGRADE, 0);
+        esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_OTA_UPGRADE_V2, 0);
+        {
+            char inform[256];
+            snprintf(inform, sizeof(inform),
+                "{\"id\":\"ota_inform\",\"version\":\"1.0\",\"params\":{\"version\":\"%s\"}}",
+                APP_VERSION);
+            esp_mqtt_client_publish(s_mqtt_client, ALIYUN_TOPIC_OTA_INFORM,
+                inform, strlen(inform), 0, 0);
+            ESP_LOGI(TAG, "OTA inform sent: %s", inform);
+        }
         wifi_manager_request_close_ap();
         if (s_connect_sem) xSemaphoreGive(s_connect_sem);
         break;
@@ -147,7 +159,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             rx_history_add(topic_buf, data_buf);
         }
 
-        if (strstr(topic_buf, "/ota/upgrade")) {
+        if (strstr(topic_buf, "/ota/upgrade") || strstr(topic_buf, "/ota/device/upgrade/")) {
             ota_handle_mqtt_msg(topic_buf, tlen, data_buf, dlen);
             break;
         }
