@@ -5,6 +5,7 @@
 #include "version.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 #include "esp_http_client.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -605,7 +606,9 @@ static void ota_task(void *arg)
 
     set_state(OTA_STATE_REBOOT_WAIT, NULL);
     led_notify_ota_success();
-    ESP_LOGI(TAG, "OTA success: %s, rebooting...", notify->fw_version);
+    ESP_LOGI(TAG, "========== OTA UPGRADE SUCCESS ==========");
+    ESP_LOGI(TAG, "%s --> %s", APP_VERSION, notify->fw_version);
+    ESP_LOGI(TAG, "===========================================");
     vTaskDelay(pdMS_TO_TICKS(OTA_REBOOT_DELAY_MS));
     esp_restart();
 
@@ -729,8 +732,16 @@ void ota_init(void)
         esp_ota_img_states_t img_state;
         if (esp_ota_get_state_partition(running, &img_state) == ESP_OK) {
             if (img_state == ESP_OTA_IMG_PENDING_VERIFY) {
+                const char *old_ver = "unknown";
+                const esp_partition_t *prev = esp_ota_get_next_update_partition(running);
+                if (prev) {
+                    esp_app_desc_t old_desc;
+                    if (esp_ota_get_partition_description(prev, &old_desc) == ESP_OK) {
+                        old_ver = old_desc.version;
+                    }
+                }
                 ESP_LOGI(TAG, "========== OTA UPGRADE OK ==========");
-                ESP_LOGI(TAG, "Firmware updated -> %s", APP_VERSION);
+                ESP_LOGI(TAG, "%s --> %s", old_ver, APP_VERSION);
                 ESP_LOGI(TAG, "=====================================");
                 esp_ota_mark_app_valid_cancel_rollback();
             } else if (img_state == ESP_OTA_IMG_ABORTED) {
