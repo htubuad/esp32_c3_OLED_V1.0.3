@@ -7,7 +7,7 @@
 ## 1. 目录结构
 
 ```
-esp32_c3_V1.3.3/
+esp32_c3_V1.3.1/
 ├── main/                      # 主程序入口
 │   ├── main.c                 # app_main() 启动流程
 │   ├── version.h              # 版本号 / 芯片信息
@@ -112,7 +112,30 @@ app_main()
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 事件处理
+### 3.3 开机 AP 自动关闭节能机制
+
+```
+开机路径（有凭证）:
+  do_wifi_start_once() → AP 全开（给手机 60s 配置窗口）
+  start_ap_auto_close_timer()  ← 启动 60s 定时器
+       │
+       ├─ 60s 后回调 ap_auto_close_cb():
+       │    ├─ s_wifi_connected == true → do_close_ap() 节能 ✅
+       │    │   s_state 从 STA_CONNECTED → STA_ONLY
+       │    │
+       │    └─ s_wifi_connected == false → AP 保持开启
+       │        （用户可能还在等配置 / 密码错了正在 retry_timer 重试）
+       │
+       └─ 无凭证开机 → 不启动此定时器（用户需要 AP 配置）
+
+定时器停止条件:
+  - do_close_ap() 里 stop_ap_auto_close_timer()
+  - 定时器自然到期（单次触发）
+```
+
+**设计意图**：开机给 1 分钟窗口让手机能连 AP 进配置页，之后自动关 AP 省电。如果 1 分钟到了 STA 还没连上（密码错误等），AP 保持开启方便用户排查。
+
+### 3.4 事件处理
 
 | 事件 | 处理 |
 |------|------|
@@ -121,16 +144,16 @@ app_main()
 | `IP_EVENT_STA_GOT_IP` | 设 `s_sta_ever_connected=true` + 停 retry_timer + 启动 RSSI + mDNS 注册 |
 | `IP_EVENT_STA_LOST_IP` | DHCP 续租 |
 
-### 3.4 命令队列（外部 → 状态机）
+### 3.5 命令队列（外部 → 状态机）
 
 | 命令 | 触发场景 | 行为 |
 |------|---------|------|
 | `CMD_CONNECT_NEW` | Web 配置页提交新 WiFi | `do_runtime_switch()` 热切换 |
 | `CMD_CLEAR_AND_AP` | 恢复出厂设置 | 清 NVS + 进 AP 模式 + 启动 retry_timer |
-| `CMD_CLOSE_AP` | 关闭热点 | `esp_wifi_set_mode(STA)` + 停 retry_timer |
+| `CMD_CLOSE_AP` | 关闭热点 | `esp_wifi_set_mode(STA)` + 停 retry_timer + 停 auto_close_timer |
 | `CMD_OPEN_AP` | 打开热点 | `esp_wifi_set_mode(APSTA)` + **恢复 STA 重连** |
 
-### 3.5 关键变量
+### 3.6 关键变量
 
 ```c
 static bool s_sta_ever_connected = false;  // 标记曾连接成功 → 运行时掉线无限重试
@@ -139,6 +162,7 @@ static bool s_wifi_connected = false;      // 当前 STA 是否已连上
 static bool s_ap_active = false;           // 当前 AP 是否开启
 static esp_timer_handle_t s_retry_timer;   // 后台重试定时器
 static esp_timer_handle_t s_rssi_timer;    // RSSI 周期更新定时器（5秒）
+static esp_timer_handle_t s_ap_auto_close_timer;  // 开机 AP 自动关闭定时器（60秒）
 static EventGroupHandle_t s_event_group;   // CONNECTED_BIT / FAIL_BIT
 static QueueHandle_t s_cmd_queue;          // 外部命令队列（长度 8）
 ```
@@ -435,6 +459,7 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 |-------|------|------|
 | s_rssi_timer | 5s | WiFi RSSI 周期更新 |
 | s_retry_timer | 15s→30s | AP 模式后台重连 WiFi |
+| s_ap_auto_close_timer | 60s | 开机 AP 自动关闭节能（有凭证时启动） |
 | MQTT tick | 任务内 100ms | MQTT 状态机轮询 |
 
 ---

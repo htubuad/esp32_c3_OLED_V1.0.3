@@ -65,16 +65,20 @@ static bool s_wifi_started = false;
 
 static bool s_sta_ever_connected = false;
 static esp_timer_handle_t s_retry_timer = NULL;
+static esp_timer_handle_t s_ap_auto_close_timer = NULL;
 
 #define MDNS_HOSTNAME "esp32c3"
 #define MAX_RETRY      3
 #define CONNECT_TIMEOUT_SEC  15
 #define WIFI_QUEUE_LEN  8
+#define AP_AUTO_CLOSE_SEC  60
 
 static void start_rssi_timer(void);
 static void stop_rssi_timer(void);
 static void start_retry_timer(void);
 static void stop_retry_timer(void);
+static void start_ap_auto_close_timer(void);
+static void stop_ap_auto_close_timer(void);
 
 typedef struct {
     uint8_t cmd;
@@ -371,6 +375,39 @@ static void stop_retry_timer(void)
     if (s_retry_timer) esp_timer_stop(s_retry_timer);
 }
 
+static void ap_auto_close_cb(void *arg)
+{
+    if (s_wifi_connected && s_ap_active) {
+        ESP_LOGI(TAG, "开机 %ds 到，STA 已连上，自动关闭 AP 节能", AP_AUTO_CLOSE_SEC);
+        do_close_ap();
+        if (s_state == WIFI_STATE_STA_CONNECTED) {
+            s_state = WIFI_STATE_STA_ONLY;
+        }
+    } else {
+        ESP_LOGI(TAG, "开机 %ds 到，STA 未连上，AP 保持开启", AP_AUTO_CLOSE_SEC);
+    }
+}
+
+static void start_ap_auto_close_timer(void)
+{
+    if (!s_ap_auto_close_timer) {
+        esp_timer_create_args_t args = {
+            .callback = ap_auto_close_cb, .name = "ap_auto_close",
+            .dispatch_method = ESP_TIMER_TASK,
+        };
+        esp_timer_create(&args, &s_ap_auto_close_timer);
+    }
+    if (s_ap_auto_close_timer) {
+        esp_timer_stop(s_ap_auto_close_timer);
+        esp_timer_start_once(s_ap_auto_close_timer, AP_AUTO_CLOSE_SEC * 1000000);
+    }
+}
+
+static void stop_ap_auto_close_timer(void)
+{
+    if (s_ap_auto_close_timer) esp_timer_stop(s_ap_auto_close_timer);
+}
+
 static esp_err_t do_wifi_init(void)
 {
     if (!s_event_group) s_event_group = xEventGroupCreate();
@@ -561,6 +598,7 @@ static esp_err_t do_close_ap(void)
     if (!s_ap_active) return ESP_OK;
 
     stop_retry_timer();
+    stop_ap_auto_close_timer();
     dns_server_stop();
     mdns_unregister_ap();
 
@@ -637,6 +675,8 @@ static void fsm_task(void *arg)
     if (wifi_cred_load(&cred)) {
         s_state = WIFI_STATE_STA_CONNECT;
         do_wifi_start_once(cred.ssid, cred.password);
+
+        start_ap_auto_close_timer();
 
         EventBits_t bits = xEventGroupWaitBits(s_event_group,
                 CONNECTED_BIT | FAIL_BIT, pdFALSE, pdFALSE,
