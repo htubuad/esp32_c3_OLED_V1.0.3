@@ -11,6 +11,7 @@
 
 #define BLINK_SLOW_US       300000
 #define BLINK_FAST_US       90000
+#define BLINK_IDLE_US       2000000
 
 #define NOTIFY_US           80000
 
@@ -22,6 +23,7 @@ static int s_notify_step = 0;
 static bool s_ap_active = false;
 static bool s_sta_connected = false;
 static bool s_mqtt_connected = false;
+static bool s_idle_energy_save = false;
 
 static void resolve_status_mode(void)
 {
@@ -31,6 +33,8 @@ static void resolve_status_mode(void)
         led_status_mode_set(LED_MODE_BLINK_SLOW);
     } else if (s_ap_active) {
         led_status_mode_set(LED_MODE_BLINK_FAST);
+    } else if (s_idle_energy_save) {
+        led_status_mode_set(LED_MODE_BLINK_IDLE);
     } else {
         led_status_mode_set(LED_MODE_BLINK_SLOW);
     }
@@ -66,6 +70,10 @@ static void resume_status_mode(void)
     case LED_MODE_BLINK_FAST:
         apply_gpio(true);
         esp_timer_start_once(s_status_timer, BLINK_FAST_US);
+        break;
+    case LED_MODE_BLINK_IDLE:
+        apply_gpio(true);
+        esp_timer_start_once(s_status_timer, BLINK_IDLE_US);
         break;
     case LED_MODE_ON:
         apply_gpio(true);
@@ -113,6 +121,13 @@ static void status_timer_cb(void *arg)
         apply_gpio(on);
         s_blink_step++;
         esp_timer_start_once(s_status_timer, BLINK_FAST_US);
+        break;
+    }
+    case LED_MODE_BLINK_IDLE: {
+        bool on = (s_blink_step % 2 == 0);
+        apply_gpio(on);
+        s_blink_step++;
+        esp_timer_start_once(s_status_timer, BLINK_IDLE_US);
         break;
     }
     default:
@@ -208,6 +223,10 @@ void led_status_mode_set(led_mode_t mode)
         apply_gpio(true);
         esp_timer_start_once(s_status_timer, BLINK_FAST_US);
         break;
+    case LED_MODE_BLINK_IDLE:
+        apply_gpio(true);
+        esp_timer_start_once(s_status_timer, BLINK_IDLE_US);
+        break;
     default:
         apply_gpio(false);
         break;
@@ -229,5 +248,11 @@ void led_notify_wifi_sta(bool connected)
 void led_notify_mqtt(bool connected)
 {
     s_mqtt_connected = connected;
+    resolve_status_mode();
+}
+
+void led_notify_wifi_idle(bool energy_save)
+{
+    s_idle_energy_save = energy_save;
     resolve_status_mode();
 }

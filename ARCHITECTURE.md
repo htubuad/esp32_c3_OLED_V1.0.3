@@ -333,12 +333,13 @@ const char *mqtt_get_last_rx_data(void);
 
 ### 8.2 模式
 
-| 模式 | 说明 |
-|------|------|
-| LED_MODE_OFF | 灭（占空比 0） |
-| LED_MODE_ON | 常亮（占空比 1023） |
-| LED_MODE_BLINK_SLOW | 慢闪，300ms 周期 |
-| LED_MODE_BLINK_FAST | 快闪，90ms 周期 |
+| 模式 | 说明 | 周期 |
+|------|------|------|
+| LED_MODE_OFF | 灭（占空比 0） | - |
+| LED_MODE_ON | 常亮（占空比 1023） | - |
+| LED_MODE_BLINK_SLOW | 慢闪 | 300ms |
+| LED_MODE_BLINK_FAST | 快闪 | 90ms |
+| LED_MODE_BLINK_IDLE | 超慢闪（节能态） | **2000ms** |
 
 ### 8.3 状态优先级（resolve_status_mode）
 
@@ -352,6 +353,9 @@ STA 连上 ───────▶ LED_MODE_BLINK_SLOW  （300ms 慢闪）
 AP 开启 ───────▶ LED_MODE_BLINK_FAST   （90ms 快闪）
     │
     ▼
+IDLE 节能 ──────▶ LED_MODE_BLINK_IDLE  （2000ms 超慢闪）
+    │
+    ▼
 都没有 ───────▶ LED_MODE_BLINK_SLOW  （兜底）
 ```
 
@@ -363,6 +367,8 @@ led_notify_wifi_ap(true);      // do_wifi_start_once / do_open_ap
 led_notify_wifi_ap(false);     // do_close_ap
 led_notify_wifi_sta(true);     // GOT_IP
 led_notify_wifi_sta(false);    // DISCONNECTED
+led_notify_wifi_idle(true);    // ap_idle_timeout_cb（配网超时→节能态）
+led_notify_wifi_idle(false);   // do_wifi_init / do_wifi_start_once / do_open_ap（恢复使用）
 
 // mqtt_aliyun.c
 led_notify_mqtt(true);         // MQTT CONNECTED
@@ -410,6 +416,7 @@ static int s_blink_step;             // 闪烁计数器（奇偶决定亮灭）
 static bool s_ap_active;             // AP 状态输入
 static bool s_sta_connected;         // STA 状态输入
 static bool s_mqtt_connected;        // MQTT 状态输入
+static bool s_idle_energy_save;      // 配网超时节能态（→ BLINK_IDLE 超慢闪）
 
 static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知复用）
 ```

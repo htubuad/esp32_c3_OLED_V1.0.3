@@ -426,6 +426,7 @@ static void ap_idle_timeout_cb(void *arg)
         set_status("配网超时，重启恢复");
         do_close_ap();
         s_state = WIFI_STATE_IDLE;
+        led_notify_wifi_idle(true);
     }
 }
 
@@ -452,6 +453,8 @@ static void stop_ap_idle_timer(void)
 static esp_err_t do_wifi_init(void)
 {
     if (!s_event_group) s_event_group = xEventGroupCreate();
+
+    led_notify_wifi_idle(false);
 
     esp_err_t err;
 
@@ -558,6 +561,7 @@ static esp_err_t do_wifi_start_once(const char *sta_ssid, const char *sta_pass)
 
     s_ap_active = true;
     led_notify_wifi_ap(true);
+    led_notify_wifi_idle(false);
 
     vTaskDelay(pdMS_TO_TICKS(300));
     mdns_register_ap();
@@ -692,6 +696,7 @@ static esp_err_t do_open_ap(void)
 
     s_ap_active = true;
     led_notify_wifi_ap(true);
+    led_notify_wifi_idle(false);
     snprintf(s_ap_ip_str, sizeof(s_ap_ip_str), WIFI_AP_IP);
 
     vTaskDelay(pdMS_TO_TICKS(200));
