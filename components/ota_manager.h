@@ -26,5 +26,6 @@ void ota_handle_mqtt_msg(const char *topic, int topic_len,
                          const char *data, int data_len);
 void ota_get_status(ota_status_t *out);
 void ota_abort(void);
+void ota_maybe_post_reboot_ok(void);
 
 #endif

@@ -57,6 +57,7 @@ static volatile bool  s_cancel_requested = false;
 static bool          s_md5_ctx_ready = false;
 static mbedtls_md_context_t s_md5_ctx;
 static bool          s_initialized = false;
+static volatile bool s_ota_need_post_reboot_ok = false;
 
 static void set_state(ota_state_t st, const char *err)
 {
@@ -718,6 +719,15 @@ void ota_abort(void)
     s_cancel_requested = true;
 }
 
+void ota_maybe_post_reboot_ok(void)
+{
+    if (!s_ota_need_post_reboot_ok) return;
+    if (!mqtt_is_connected()) return;
+    s_ota_need_post_reboot_ok = false;
+    report_result("0", APP_VERSION);
+    ESP_LOGI(TAG, "Reboot-after-OTA success reported: version=%s", APP_VERSION);
+}
+
 void ota_init(void)
 {
     if (s_initialized) return;
@@ -744,6 +754,7 @@ void ota_init(void)
                 ESP_LOGI(TAG, "%s --> %s", old_ver, APP_VERSION);
                 ESP_LOGI(TAG, "=====================================");
                 esp_ota_mark_app_valid_cancel_rollback();
+                s_ota_need_post_reboot_ok = true;
             } else if (img_state == ESP_OTA_IMG_ABORTED) {
                 ESP_LOGW(TAG, "Previous OTA aborted, device may have rolled back");
             }

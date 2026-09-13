@@ -138,6 +138,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 inform, strlen(inform), 0, 0);
             ESP_LOGI(TAG, "OTA inform sent: %s", inform);
         }
+        ota_maybe_post_reboot_ok();
         wifi_manager_request_close_ap();
         if (s_connect_sem) xSemaphoreGive(s_connect_sem);
         break;

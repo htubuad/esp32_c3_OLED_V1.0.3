@@ -46,7 +46,7 @@ app_main()
   ├─ 4. 若启动时已连上 WiFi → 立即启动 SNTP + MQTT + OTA
   │     ├─ sntp_init_and_sync()
   │     ├─ mqtt_init()
-  │     └─ ota_init()          # 检查上次 OTA 状态（pending verify → mark valid）
+  │     └─ ota_init()          # 检查上次 OTA 状态（pending verify → mark valid + 置 reboot_ok 标志）
   │
   ├─ 5. 启动 Web 服务器（即使 WiFi 没连上也能访问 AP 页面）
   │     └─ start_webserver()
@@ -301,6 +301,7 @@ void wifi_update_rssi(void);
 - **MQTT 缓冲区**：`.buffer.size` / `.buffer.out_size` = **2048**（原为 512，防止 OTA 推送 JSON 被内部截断）
 - **内部任务栈**：`.task.stack_size` = **8192**（显式设置，防止事件回调内 subscribe + publish 栈溢出）
 - **事件回调内执行 subscribe**：MQTT_EVENT_CONNECTED 里直接调 esp_mqtt_subscribe 三个 OTA 主题，返回值检查 + 错误日志
+- **MQTT 连接成功附加动作**：MQTT_EVENT_CONNECTED 里除 subscribe 外，还会发 OTA inform（上报当前 APP_VERSION）+ 调用 `ota_maybe_post_reboot_ok()`（若上次 OTA 升级后重启，补发 step="0" 二次确认）
 
 ### 4.3 对外 API
 
@@ -370,7 +371,7 @@ ota_handle_mqtt_msg()
 | 主题 | 用途 |
 |------|------|
 | `/sys/{pk}/{dn}/ota/upgrade_reply` | 对每次推送的即时回复（code=200 接收 / code=-1 拒绝） |
-| `/sys/{pk}/{dn}/ota/post` | 进度上报（step="2" + percent），最终结果（step="0" 成功 / step="3" 失败） |
+| `/sys/{pk}/{dn}/ota/post` | 进度上报（step="2" + percent），最终结果（step="0" 成功 / step="3" 失败），**重启后二次确认（step="0" + APP_VERSION）** |
 
 ### 5.4 HTTP 下载（含重试 & WiFi 防护 & TLS）
 
@@ -419,6 +420,31 @@ ESP-IDF v6.x 的 `esp_http_client_open` 在某些场景下返回 OK 但 `status_
 #### 版本比较防御
 
 `is_newer_version()` 调用 `parse_version_ints()` 封装 sscanf，只有 sscanf 匹配到 ≥ 2 个字段才返回 true，防止异常版本字符串导致 sscanf 返回 0 比较出错。
+
+#### 重启后二次确认（Reboot OK Confirm）
+
+OTA 升级成功后（重启前）会发送 `report_result("0", version)`，但如果设备在重启过程中掉电，云端会误认为升级成功而实际未生效。因此增加重启后的二次确认机制：
+
+```
+ota_init() 检测到 ESP_OTA_IMG_PENDING_VERIFY
+  ├─ esp_ota_mark_app_valid_cancel_rollback()   ← 标记新固件有效
+  └─ s_ota_need_post_reboot_ok = true            ← 置标志（此时 MQTT 尚未连上）
+
+...WiFi 连上 → MQTT init → MQTT 连接成功...
+
+mqtt_event_handler() MQTT_EVENT_CONNECTED:
+  ├─ OTA inform 当前版本（已有逻辑）
+  └─ ota_maybe_post_reboot_ok()                 ← 新增触发点
+       ├─ 检查 s_ota_need_post_reboot_ok
+       ├─ 检查 mqtt_is_connected()
+       ├─ 清标志
+       └─ report_result("0", APP_VERSION)       ← 重启后 step="0" 确认
+```
+
+- **标志存储**：`static volatile bool s_ota_need_post_reboot_ok`（volatile 保证跨任务可见性）
+- **触发时机**：每次 MQTT 连接成功时调用，零开销（标志为 false 时立即 return）
+- **幂等安全**：标志在发送一次后立即清零，即使 MQTT 多次重连也不会重复上报
+- **正常重启无影响**：非 OTA 场景下 `img_state` 不是 `PENDING_VERIFY`，标志始终为 false
 
 ### 5.5 MD5 校验
 
