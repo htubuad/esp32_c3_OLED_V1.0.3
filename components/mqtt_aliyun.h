@@ -5,6 +5,9 @@
 #include "esp_err.h"
 #include "version.h"
 
+#define ALIYUN_PRODUCT_KEY   "k1jrhJxxEiu"
+#define ALIYUN_DEVICE_NAME   "esp32_s3_new"
+
 #define DEVICE_ID           "001_" APP_VERSION
 #define DEVICE_ID_PREFIX    "001"
 

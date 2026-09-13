@@ -7,7 +7,7 @@
 ## 1. 目录结构
 
 ```
-esp32_c3_V1.3.1/
+esp32_c3_V1.3.3/
 ├── main/                      # 主程序入口
 │   ├── main.c                 # app_main() 启动流程
 │   ├── version.h              # 版本号 / 芯片信息
@@ -15,13 +15,14 @@ esp32_c3_V1.3.1/
 ├── components/                # 组件库（驱动统一放这里）
 │   ├── wifi_manager.c/h       # ★ WiFi 状态机（STA+AP 共存）
 │   ├── mqtt_aliyun.c/h        # ★ 阿里云 MQTT 状态机
+│   ├── ota_manager.c/h        # ★ OTA 升级管理器（MQTT 触发 + HTTP 下载）
 │   ├── web_server.c/h         # HTTP 服务器（配置/状态查看）
 │   ├── dns_server.c/h         # DNS 服务器（AP 模式 CNAME 劫持）
 │   ├── sntp_sync.c/h          # SNTP 时间同步
-│   ├── led.c/h                # 状态 LED 驱动
+│   ├── led.c/h                # 状态 LED 驱动（含 OTA 指示模式）
 │   ├── switch.c/h             # 开关 / 电源 GPIO 驱动
 │   └── temp_sensor.c/h        # 内部温度传感器驱动
-├── partitions.csv             # 分区表
+├── partitions.csv             # 分区表（双 OTA 分区 + ota_data）
 ├── sdkconfig                  # SDK 配置
 └── CMakeLists.txt
 ```
@@ -36,19 +37,22 @@ app_main()
   ├─ 1. NVS 初始化（若损坏则擦除重建）
   ├─ 2. 硬件初始化
   │     ├─ switch_init()       # GPIO 开关驱动
-  │     ├─ led_init()          # 状态 LED
+  │     ├─ led_init()          # 状态 LED + PWM 定时器
   │     └─ temp_sensor_init()  # 内部温度传感器
   │
   ├─ 3. 启动 WiFi 管理器（自动连接或进 AP 配网）
   │     └─ wifi_manager_start()  → 创建 fsm_task 状态机
   │
-  ├─ 4. 若启动时已连上 WiFi → 立即启动 SNTP + MQTT
+  ├─ 4. 若启动时已连上 WiFi → 立即启动 SNTP + MQTT + OTA
+  │     ├─ sntp_init_and_sync()
+  │     ├─ mqtt_init()
+  │     └─ ota_init()          # 检查上次 OTA 状态（pending verify → mark valid）
   │
   ├─ 5. 启动 Web 服务器（即使 WiFi 没连上也能访问 AP 页面）
   │     └─ start_webserver()
   │
   └─ 6. 主循环（5秒轮询）
-        └─ 检测到 WiFi 连上但服务未启动 → 补启动 SNTP + MQTT
+        └─ 检测到 WiFi 连上但服务未启动 → 补启动 SNTP + MQTT + OTA
 ```
 
 ---
@@ -112,28 +116,51 @@ app_main()
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 开机 AP 自动关闭节能机制
+### 3.3 AP 自动关闭节能机制（双模式）
 
 ```
-开机路径（有凭证）:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+模式 A：开机有凭证
   do_wifi_start_once() → AP 全开（给手机 60s 配置窗口）
+  s_ap_close_wait_mqtt = false（默认）
   start_ap_auto_close_timer()  ← 启动 60s 定时器
        │
        ├─ 60s 后回调 ap_auto_close_cb():
        │    ├─ s_wifi_connected == true → do_close_ap() 节能 ✅
-       │    │   s_state 从 STA_CONNECTED → STA_ONLY
+       │    │   （不等 MQTT，开机场景 MQTT 慢但不需要等）
        │    │
        │    └─ s_wifi_connected == false → AP 保持开启
        │        （用户可能还在等配置 / 密码错了正在 retry_timer 重试）
        │
        └─ 无凭证开机 → 不启动此定时器（用户需要 AP 配置）
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+模式 B：配网成功后等待 MQTT
+  触发场景：CMD_CONNECT_NEW 成功（AP 配网提交新 WiFi 成功）
+  s_ap_close_wait_mqtt = true
+  start_ap_auto_close_timer()  ← 启动 5s 定时器（立即轮询）
+       │
+       ├─ 每 5s 回调 ap_auto_close_cb():
+       │    ├─ mqtt_is_connected() == false
+       │    │    ├─ 累计等待 < 60s → 再等 5s
+       │    │    └─ 累计等待 ≥ 60s → 强制关 AP（MQTT 超时保护）
+       │    │
+       │    └─ mqtt_is_connected() == true
+       │         → 延迟 10s → do_close_ap() ✅
+       │         （给手机留够时间看到"配网+云连接"全部成功）
+       │
+       └─ WiFi 在等待期间断开 → reset 标志 → AP 保持开启
+          （重连后不再触发自动关闭，避免干扰）
+
 定时器停止条件:
   - do_close_ap() 里 stop_ap_auto_close_timer()
-  - 定时器自然到期（单次触发）
+  - 定时器自然到期（单次触发 / 循环重 schedule）
 ```
 
-**设计意图**：开机给 1 分钟窗口让手机能连 AP 进配置页，之后自动关 AP 省电。如果 1 分钟到了 STA 还没连上（密码错误等），AP 保持开启方便用户排查。
+**设计意图**：
+- 开机场景：给 1 分钟配置窗口，之后不管 MQTT 连没连都关 AP（开机时用户可能不需要手机干预）
+- 配网场景：等整个流程（WiFi + MQTT）都成功后再关 AP，让用户通过 LED 状态确认"配网完成"后自动收网
+- MQTT 等待超时保护：避免因 MQTT 故障导致 AP 永不关闭
 
 ### 3.4 AP 配网模式超时节能机制
 
@@ -187,8 +214,10 @@ static bool s_wifi_connected = false;      // 当前 STA 是否已连上
 static bool s_ap_active = false;           // 当前 AP 是否开启
 static esp_timer_handle_t s_retry_timer;   // 后台重试定时器
 static esp_timer_handle_t s_rssi_timer;    // RSSI 周期更新定时器（5秒）
-static esp_timer_handle_t s_ap_auto_close_timer;  // 开机 AP 自动关闭定时器（60秒）
+static esp_timer_handle_t s_ap_auto_close_timer;  // AP 自动关闭定时器（60秒开机 / 5秒轮询MQTT）
 static esp_timer_handle_t s_ap_idle_timer;       // AP 配网超时定时器（300秒，纯配网场景）
+static bool s_ap_close_wait_mqtt = false;   // 配网场景：关 AP 前先等 MQTT 连上
+static int  s_ap_wait_mqtt_elapsed = 0;     // MQTT 等待累计秒数（超时保护）
 static EventGroupHandle_t s_event_group;   // CONNECTED_BIT / FAIL_BIT
 static QueueHandle_t s_cmd_queue;          // 外部命令队列（长度 8）
 ```
@@ -268,6 +297,7 @@ void wifi_update_rssi(void);
 - **重发机制**：PUBREC/PUBREL 未收到 ACK 会重发
 - **RX 环形缓冲区**：8 条 `mqtt_rx_entry_t`，保存最近收到的消息
 - **阿里云参数上报**：`mqtt_publish_aliyun_params(json)` 用 `/sys/{device}/thing/event/property/post` 主题
+- **OTA 消息分发**：RX 事件检测到 topic 含 `/ota/upgrade` → 直接调用 `ota_handle_mqtt_msg()` 进入 OTA 流程（跳过常规 JSON 解析）
 
 ### 4.3 对外 API
 
@@ -283,7 +313,139 @@ const char *mqtt_get_last_rx_data(void);
 
 ---
 
-## 5. Web Server
+## 5. OTA 升级（ota_manager.c）
+
+### 5.1 触发流程
+
+```
+阿里云控制台推送 /ota/upgrade
+  │
+  ▼
+mqtt_aliyun.c RX 事件检测到 topic 含 "/ota/upgrade"
+  │
+  ▼
+ota_handle_mqtt_msg()
+  ├─ 解析 JSON（cJSON）→ ota_notify_t
+  ├─ 版本号校验 is_newer_version()（语义版本比较 x.y.z）
+  │     └─ 非 forceUpgrade 且版本相同或更旧 → 回复 200 忽略
+  ├─ MQTT 连接检查
+  └─ 创建 ota_task（优先级 5，栈 **12288** 字节）
+```
+
+### 5.2 OTA 状态机（ota_state_t）
+
+| 状态 | 含义 |
+|------|------|
+| OTA_STATE_IDLE | 空闲，等待 OTA 通知 |
+| OTA_STATE_DOWNLOADING | HTTP 下载中，每 5% 上报进度 |
+| OTA_STATE_VERIFYING | MD5 校验 + esp_ota_end |
+| OTA_STATE_SWITCHING | esp_ota_set_boot_partition 切换启动分区 |
+| OTA_STATE_REBOOT_WAIT | 成功后 2s 等待 → esp_restart() |
+| OTA_STATE_FAILED | 任意步骤失败 → cleanup + LED 错误指示 |
+
+### 5.3 阿里云 OTA 消息格式
+
+**下行推送**（设备收到）：`/sys/{productKey}/{deviceName}/ota/upgrade`
+
+```json
+{
+  "id": "msg-id-001",
+  "version": "1.0",
+  "params": {
+    "fwId": "firmware-001",
+    "fwUrl": "https://xxx.oss-cn-hangzhou.aliyuncs.com/app.bin",
+    "fwVersion": "1.3.4",
+    "fwSign": "md5hexdigest32chars",
+    "signMethod": "MD5",
+    "forceUpgrade": false
+  }
+}
+```
+
+**上行回复**（设备发送）：
+
+| 主题 | 用途 |
+|------|------|
+| `/sys/{pk}/{dn}/ota/upgrade_reply` | 对每次推送的即时回复（code=200 接收 / code=-1 拒绝） |
+| `/sys/{pk}/{dn}/ota/post` | 进度上报（step="2" + percent），最终结果（step="0" 成功 / step="3" 失败） |
+
+### 5.4 HTTP 下载（含重试 & WiFi 防护）
+
+- **缓冲区**：4096 字节（`OTA_BUFFER_SIZE`）
+- **超时**：30s（`OTA_HTTP_TIMEOUT_MS`）
+- **写入方式**：`esp_ota_write()` 直写目标 OTA 分区，不暂存 RAM
+- **进度上报**：每 5% 通过 `/ota/post` 上报一次
+- **HTTP 连接重试**：最多 **3 次**（`OTA_HTTP_RETRY_MAX`），间隔 **1500ms**（`OTA_HTTP_RETRY_INTERVAL_MS`）
+- **单次读取重试**：HTTP 读失败后最多 **2 次**（`OTA_READ_RETRY_MAX`），间隔 **200ms**（`OTA_READ_RETRY_INTERVAL_MS`）
+- **WiFi 断开检测**：每次读取前检查 `wifi_is_connected()`，WiFi 断了立即中止（`OTA_DOWNLOAD_WIFI_LOST`）
+- **用户取消**：`ota_abort()` 设 `s_cancel_requested=true`，下载循环检测后返回 `OTA_DOWNLOAD_CANCELLED`
+- **分区大小校验**：下载完成后比对 `target->size` 与实际固件大小，超分区容量则中止
+
+### 5.5 MD5 校验
+
+- 使用 mbedtls v3 API：`mbedtls_md_init()` + `mbedtls_md_setup()` + `mbedtls_md_starts()`
+- 下载过程中持续 `mbedtls_md_update()` 累积哈希
+- 下载完成后 `mbedtls_md_finish()` → 32 位小写十六进制字符串
+- 与 `fwSign` 忽略大小写比对（`strcasecmp`）
+- **降级策略**：MD5 初始化失败不中止 OTA，继续写入（仅在 signMethod=MD5 且 fwSign 非空时才比对）
+
+### 5.6 分区切换与重启
+
+1. `esp_ota_end(ota_handle)` → 提交固件到目标分区
+2. `esp_ota_set_boot_partition(target)` → 设下次启动用新分区
+3. 成功时 `led_notify_ota_success()` → LED 3 快闪 + 常亮
+4. 等待 **3s**（`OTA_REBOOT_DELAY_MS`）→ `esp_restart()`
+
+### 5.7 开机恢复（ota_init）
+
+```c
+const esp_partition_t *running = esp_ota_get_running_partition();
+esp_ota_img_states_t img_state;
+esp_ota_get_state_partition(running, &img_state);
+
+if (img_state == ESP_OTA_IMG_PENDING_VERIFY) {
+    esp_ota_mark_app_valid_cancel_rollback();  // 新固件启动成功 → 标记有效
+}
+if (img_state == ESP_OTA_IMG_ABORTED) {
+    ESP_LOGW("Previous OTA aborted, device may have rolled back");
+}
+```
+
+### 5.8 OTA LED 联动
+
+| OTA 阶段 | LED 函数 | LED 表现 |
+|----------|----------|---------|
+| 下载开始 | `led_notify_ota_start()` | **双闪**：短亮→短灭→短亮→长灭（BLINK_DOUBLE） |
+| 下载成功 | `led_notify_ota_success()` | **3 次快闪 → 常亮**（BLINK_GOOD，占空比 500） |
+| 失败 | `led_notify_ota_fail()` | **快速闪烁**（BLINK_BAD，75ms 周期） |
+
+### 5.9 关键变量
+
+```c
+static ota_state_t  s_state;           // 当前 OTA 状态
+static int          s_progress;        // 下载进度 0-100
+static char         s_target_version[32];  // 目标固件版本号
+static char         s_error_reason[128];   // 失败原因（128 字节）
+static volatile bool s_ota_in_progress;    // OTA 进行中（防止重入）
+static volatile bool s_cancel_requested;   // 用户取消请求
+static TaskHandle_t s_ota_task_handle;     // OTA 任务句柄
+static mbedtls_md_context_t s_md5_ctx;     // MD5 上下文
+static bool         s_md5_ctx_ready;       // MD5 ctx 是否初始化成功
+```
+
+### 5.10 对外 API
+
+```c
+void ota_init(void);                                  // 开机恢复 + 初始化二值信号量
+bool ota_is_in_progress(void);                        // OTA 是否正在进行
+void ota_handle_mqtt_msg(topic, topic_len, data, data_len);  // MQTT 消息入口（在 mqtt_aliyun.c 中被调用）
+void ota_get_status(ota_status_t *out);              // 查询当前状态、进度、版本、错误信息
+void ota_abort(void);                                 // 请求中止正在进行的 OTA（设 s_cancel_requested）
+```
+
+---
+
+## 6. Web Server
 
 - **底层**：`esp_http_server`
 - **线程**：HTTP 内置任务（与 WiFi 同任务优先级）
@@ -303,7 +465,7 @@ const char *mqtt_get_last_rx_data(void);
 
 ---
 
-## 6. DNS Server
+## 7. DNS Server
 
 - **协议**：UDP 53
 - **作用**：AP 模式下把所有域名解析到 `192.168.4.1`（即设备自身），实现 **Captive Portal**（手机连上热点自动跳转到配置页）
@@ -311,7 +473,7 @@ const char *mqtt_get_last_rx_data(void);
 
 ---
 
-## 7. SNTP 时间同步
+## 8. SNTP 时间同步
 
 - **触发**：WiFi 连接成功后（main.c 里检测）
 - **NTP 服务器**：默认 pool.ntp.org
@@ -319,9 +481,9 @@ const char *mqtt_get_last_rx_data(void);
 
 ---
 
-## 8. LED 驱动
+## 9. LED 驱动
 
-### 8.1 硬件配置
+### 9.1 硬件配置
 
 | 项目 | 值 |
 |------|-----|
@@ -331,17 +493,20 @@ const char *mqtt_get_last_rx_data(void);
 | 分辨率 | 10 bit（占空比 0~1023） |
 | 定时器 / 通道 | LEDC_TIMER_0 / LEDC_CHANNEL_0 |
 
-### 8.2 模式
+### 9.2 模式
 
-| 模式 | 说明 | 周期 | PWM 占空比 |
-|------|------|------|-----------|
+| 模式 | 说明 | 周期 / 时序 | PWM 占空比 |
+|------|------|------------|-----------|
 | LED_MODE_OFF | 灭 | - | 0 |
-| LED_MODE_ON | 常亮（MQTT 连上） | - | **500 (49%)** |
+| LED_MODE_ON | 常亮（MQTT 连上 / OTA 成功收尾） | - | **500 (49%)** |
 | LED_MODE_BLINK_SLOW | 慢闪 | 300ms | 1023 |
 | LED_MODE_BLINK_FAST | 快闪 | 90ms | 1023 |
 | LED_MODE_BLINK_IDLE | 超慢闪（节能态） | 2000ms | 1023 |
+| **LED_MODE_BLINK_DOUBLE** | **OTA 下载中：双闪** | 亮100ms→灭60ms→亮100ms→灭600ms | 1023 |
+| **LED_MODE_BLINK_GOOD** | **OTA 成功：3 次快闪→常亮** | 快闪 6 次×100ms→常亮 | 1023→500 |
+| **LED_MODE_BLINK_BAD** | **OTA 失败：快闪** | 75ms | 1023 |
 
-### 8.3 状态优先级（resolve_status_mode）
+### 9.3 状态优先级（resolve_status_mode）
 
 ```
 MQTT 连上 ───────▶ LED_MODE_ON  （常亮，最高优先级）
@@ -357,9 +522,12 @@ IDLE 节能 ──────▶ LED_MODE_BLINK_IDLE  （2000ms 超慢闪）
     │
     ▼
 都没有 ───────▶ LED_MODE_BLINK_SLOW  （兜底）
+
+⚠️ OTA 专用模式（DOUBLE / GOOD / BAD）直接通过 led_status_mode_set() 强制覆盖，
+   不走 resolve_status_mode 优先级链
 ```
 
-### 8.4 WiFi/MQTT 状态联动（被调用方 → LED）
+### 9.4 WiFi/MQTT/OTA 状态联动（被调用方 → LED）
 
 ```c
 // wifi_manager.c
@@ -373,9 +541,14 @@ led_notify_wifi_idle(false);   // do_wifi_init / do_wifi_start_once / do_open_ap
 // mqtt_aliyun.c
 led_notify_mqtt(true);         // MQTT CONNECTED
 led_notify_mqtt(false);        // DISCONNECTED / ERROR
+
+// ota_manager.c
+led_notify_ota_start();        // 开始下载 → 强制 BLINK_DOUBLE
+led_notify_ota_success();      // 下载成功 → 强制 BLINK_GOOD（3闪→常亮）
+led_notify_ota_fail();         // 下载失败 → 强制 BLINK_BAD
 ```
 
-### 8.5 RX/TX 通知脉冲（notify_blink_once）
+### 9.5 RX/TX 通知脉冲（notify_blink_once）
 
 收到 MQTT 消息或发送消息时，LED 闪烁 160ms 提示：
 
@@ -396,7 +569,7 @@ RX 触发: ┌─────┐ ┌───────────┐ ┌─�
 3. 停掉状态闪烁定时器 → 复用同一个 `s_status_timer` 执行通知脉冲
 4. 160ms 后 `resume_status_mode()` 恢复
 
-### 8.6 共用定时器设计
+### 9.6 共用定时器设计
 
 `s_status_timer` 同时承担两种职责：
 - **正常模式**：`status_timer_cb` → 驱动状态闪烁（根据 `s_blink_step` 奇偶翻亮灭）
@@ -404,7 +577,7 @@ RX 触发: ┌─────┐ ┌───────────┐ ┌─�
 
 这样省下了创建第二个 esp_timer 的开销。
 
-### 8.7 关键变量
+### 9.7 关键变量
 
 ```c
 static led_mode_t s_status_mode;     // 当前 LED 模式
@@ -412,18 +585,19 @@ static led_mode_t s_saved_mode;      // 通知脉冲期间保存的模式
 static bool s_notify_active;         // 是否正在执行 RX/TX 通知脉冲
 static int s_notify_step;            // 通知脉冲步骤（0→ON, 1→OFF, 2→结束）
 static int s_blink_step;             // 闪烁计数器（奇偶决定亮灭）
+static int s_good_step;              // BLINK_GOOD 专用计数器（快闪 6 次后转常亮）
 
 static bool s_ap_active;             // AP 状态输入
 static bool s_sta_connected;         // STA 状态输入
 static bool s_mqtt_connected;        // MQTT 状态输入
 static bool s_idle_energy_save;      // 配网超时节能态（→ BLINK_IDLE 超慢闪）
 
-static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知复用）
+static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知 + OTA 模式 复用）
 ```
 
 ---
 
-## 9. Switch 驱动
+## 10. Switch 驱动
 
 | GPIO | 名称 | 说明 |
 |------|------|------|
@@ -434,7 +608,7 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 
 ---
 
-## 10. 温度传感器
+## 11. 温度传感器
 
 - 使用 ESP32-C3 内置温度传感器（ADC 通道）
 - `temp_sensor_init()` → 校准
@@ -442,7 +616,7 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 
 ---
 
-## 11. GPIO 分配总表
+## 12. GPIO 分配总表
 
 | GPIO | 方向 | 功能 | 组件 |
 |------|------|------|------|
@@ -456,7 +630,7 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 
 ---
 
-## 12. 事件总线（跨组件协作）
+## 13. 事件总线（跨组件协作）
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -472,9 +646,29 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 │                                                             │
 │  WiFi STA GOT_IP                                            │
 │       │                                                     │
-│       ├─ main.c 循环检测到 → 启动 SNTP + MQTT                │
+│       ├─ main.c 循环检测到 → 启动 SNTP + MQTT + OTA          │
 │       │                                                     │
 │       └─ MQTT 状态机检测到 → 进入 WAIT_TIME                 │
+│                                                             │
+│  MQTT 收到 /ota/upgrade 消息                                 │
+│       │                                                     │
+│       ├─ mqtt_aliyun.c → ota_handle_mqtt_msg()              │
+│       │       ├─ 解析 + 版本校验                            │
+│       │       └─ 创建 ota_task (优先级 5)                    │
+│       │              │                                      │
+│       │              ├─ LED → led_notify_ota_start()         │
+│       │              │     (强制 BLINK_DOUBLE，覆盖正常状态)   │
+│       │              ├─ HTTP 下载 + esp_ota_write()          │
+│       │              ├─ MD5 校验                            │
+│       │              ├─ esp_ota_set_boot_partition()         │
+│       │              │                                      │
+│       │              ├─ 成功 → LED_GOOD → 2s → esp_restart() │
+│       │              └─ 失败 → LED_BAD → cleanup            │
+│                                                             │
+│  OTA 启动恢复（ota_init）                                    │
+│       │                                                     │
+│       └─ 上次固件 ESP_OTA_IMG_PENDING_VERIFY                 │
+│             → esp_ota_mark_app_valid_cancel_rollback()       │
 │                                                             │
 │  Web Server 提交新 WiFi                                     │
 │       │                                                     │
@@ -486,19 +680,19 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 
 ---
 
-## 13. 关键 Timer
+## 14. 关键 Timer
 
 | Timer | 周期 | 用途 |
 |-------|------|------|
 | s_rssi_timer | 5s | WiFi RSSI 周期更新 |
 | s_retry_timer | 15s→30s | AP 模式后台重连 WiFi |
-| s_ap_auto_close_timer | 60s | 开机 AP 自动关闭节能（有凭证时启动） |
+| s_ap_auto_close_timer | 60s / 5s | AP 自动关闭节能（开机有凭证→60s；配网成功→5s轮询MQTT） |
 | s_ap_idle_timer | 300s | 配网模式超时关闭（无凭证/恢复出厂时启动） |
 | MQTT tick | 任务内 100ms | MQTT 状态机轮询 |
 
 ---
 
-## 14. WiFi 连接参数
+## 15. WiFi 连接参数
 
 | 参数 | 值 |
 |------|-----|
@@ -516,7 +710,7 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 
 ---
 
-## 15. 已知行为 & 设计决策
+## 16. 已知行为 & 设计决策
 
 1. **AP 常开策略**：即使 STA 成功连上，AP 也不关（APSTA 共存模式），手机随时能连 AP 进配置页
 2. **运行时掉线永不放弃**：`s_sta_ever_connected` 标志确保连上过后掉线会无限重试
@@ -524,10 +718,14 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 4. **热切换不 stop WiFi**：`do_runtime_switch()` 只 disconnect + set_config + connect，AP 和 Web Server 全程不掉线
 5. **retry_timer 防护逻辑**：如果 `s_sta_connect_allowed && s_sta_ever_connected` 已经成立（即时重连在工作），定时器只重新 schedule，不重复触发 connect
 6. **CMD_OPEN_AP 恢复 STA**：从 STA_ONLY 状态打开 AP 时，自动从 NVS 加载凭证并发起 STA 连接
+7. **OTA 与正常状态优先级独立**：OTA 专用 LED 模式（DOUBLE/GOOD/BAD）通过 `led_status_mode_set()` 直接覆盖，不走 resolve_status_mode 优先级链，OTA 期间 LED 完全由 OTA 状态决定
+8. **OTA 重入保护**：`s_ota_in_progress` 标志防止 MQTT 连续推送多个 OTA 消息导致并发下载
+9. **OTA 版本比较只认 x.y.z**：`is_newer_version()` 用 sscanf 解析三位数字，非标准格式一律认为版本不更新
+10. **OTA 无 MD5 校验降级**：MD5 初始化失败不中止 OTA，signMethod≠MD5 或 fwSign 为空时跳过校验直接写入
 
 ---
 
-## 16. Flash 分区表（partitions.csv）
+## 17. Flash 分区表（partitions.csv）
 
 芯片：ESP32-C3 | Flash：4 MB
 

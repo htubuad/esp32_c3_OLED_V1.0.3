@@ -3,6 +3,7 @@
 #include "switch.h"
 #include "led.h"
 #include "temp_sensor.h"
+#include "ota_manager.h"
 #include "version.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
@@ -29,6 +30,7 @@ static const char *TAG = "ALIYUN";
 
 #define ALIYUN_TOPIC_USER        "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/get"
 #define ALIYUN_TOPIC_USER_UPDATE "/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/user/update"
+#define ALIYUN_TOPIC_OTA_UPGRADE "/sys/" ALIYUN_PRODUCT_KEY "/" ALIYUN_DEVICE_NAME "/ota/upgrade"
 
 #define MQTT_CONNECT_TIMEOUT_MS  15000
 #define MQTT_RETRY_DELAY_MS      5000
@@ -119,6 +121,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         s_mqtt_state = MQTT_STATE_CONNECTED;
         led_notify_mqtt(true);
         esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_USER, 0);
+        esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_OTA_UPGRADE, 0);
         wifi_manager_request_close_ap();
         if (s_connect_sem) xSemaphoreGive(s_connect_sem);
         break;
@@ -142,6 +145,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         }
         if (!strstr(topic_buf, "_reply")) {
             rx_history_add(topic_buf, data_buf);
+        }
+
+        if (strstr(topic_buf, "/ota/upgrade")) {
+            ota_handle_mqtt_msg(topic_buf, tlen, data_buf, dlen);
+            break;
         }
 
         cJSON *root = cJSON_ParseWithLength(data_buf, (size_t)dlen);

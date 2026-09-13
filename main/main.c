@@ -12,6 +12,7 @@
 #include "sntp_sync.h"
 #include "mqtt_aliyun.h"
 #include "web_server.h"
+#include "ota_manager.h"
 
 static const char *TAG = "MAIN";
 
@@ -48,6 +49,7 @@ void app_main(void)
     if (wifi_is_connected()) {
         sntp_init_and_sync();
         mqtt_init();
+        ota_init();
         s_services_started = true;
     }
 
@@ -59,6 +61,7 @@ void app_main(void)
         if (wifi_is_connected() && !s_services_started) {
             sntp_init_and_sync();
             mqtt_init();
+            ota_init();
             s_services_started = true;
         }
     }

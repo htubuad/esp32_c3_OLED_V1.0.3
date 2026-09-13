@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "mqtt_aliyun.h"
 #include "led.h"
 #include "dns_server.h"
 #include "esp_log.h"
@@ -74,6 +75,12 @@ static esp_timer_handle_t s_ap_idle_timer = NULL;
 #define WIFI_QUEUE_LEN  8
 #define AP_AUTO_CLOSE_SEC  60
 #define AP_IDLE_TIMEOUT_SEC 300
+#define AP_WAIT_MQTT_MAX_SEC    60
+#define AP_WAIT_MQTT_CHECK_SEC  5
+#define AP_CLOSE_DELAY_AFTER_MQTT_SEC  10
+
+static bool s_ap_close_wait_mqtt = false;
+static int  s_ap_wait_mqtt_elapsed = 0;
 
 static void start_rssi_timer(void);
 static void stop_rssi_timer(void);
@@ -383,14 +390,41 @@ static void stop_retry_timer(void)
 
 static void ap_auto_close_cb(void *arg)
 {
-    if (s_wifi_connected && s_ap_active) {
-        ESP_LOGI(TAG, "开机 %ds 到，STA 已连上，自动关闭 AP 节能", AP_AUTO_CLOSE_SEC);
-        do_close_ap();
-        if (s_state == WIFI_STATE_STA_CONNECTED) {
-            s_state = WIFI_STATE_STA_ONLY;
+    if (!s_ap_active) return;
+
+    if (!s_wifi_connected) {
+        ESP_LOGI(TAG, "AP 自动关闭：STA 未连上，保持 AP 开启");
+        s_ap_close_wait_mqtt = false;
+        s_ap_wait_mqtt_elapsed = 0;
+        return;
+    }
+
+    if (s_ap_close_wait_mqtt) {
+        if (mqtt_is_connected()) {
+            ESP_LOGI(TAG, "MQTT 已连上，延迟 %ds 后关闭 AP 节能", AP_CLOSE_DELAY_AFTER_MQTT_SEC);
+            s_ap_close_wait_mqtt = false;
+            s_ap_wait_mqtt_elapsed = 0;
+            esp_timer_start_once(s_ap_auto_close_timer, AP_CLOSE_DELAY_AFTER_MQTT_SEC * 1000000);
+            return;
         }
-    } else {
-        ESP_LOGI(TAG, "开机 %ds 到，STA 未连上，AP 保持开启", AP_AUTO_CLOSE_SEC);
+
+        s_ap_wait_mqtt_elapsed += AP_WAIT_MQTT_CHECK_SEC;
+        if (s_ap_wait_mqtt_elapsed >= AP_WAIT_MQTT_MAX_SEC) {
+            ESP_LOGW(TAG, "等待 MQTT 超时 (%ds)，强制关闭 AP", AP_WAIT_MQTT_MAX_SEC);
+            s_ap_close_wait_mqtt = false;
+            s_ap_wait_mqtt_elapsed = 0;
+        } else {
+            ESP_LOGI(TAG, "等待 MQTT 连接... (%ds/%ds)",
+                     s_ap_wait_mqtt_elapsed, AP_WAIT_MQTT_MAX_SEC);
+            esp_timer_start_once(s_ap_auto_close_timer, AP_WAIT_MQTT_CHECK_SEC * 1000000);
+            return;
+        }
+    }
+
+    ESP_LOGI(TAG, "自动关闭 AP 节能");
+    do_close_ap();
+    if (s_state == WIFI_STATE_STA_CONNECTED) {
+        s_state = WIFI_STATE_STA_ONLY;
     }
 }
 
@@ -405,7 +439,10 @@ static void start_ap_auto_close_timer(void)
     }
     if (s_ap_auto_close_timer) {
         esp_timer_stop(s_ap_auto_close_timer);
-        esp_timer_start_once(s_ap_auto_close_timer, AP_AUTO_CLOSE_SEC * 1000000);
+        uint32_t interval_us = s_ap_close_wait_mqtt
+            ? (AP_WAIT_MQTT_CHECK_SEC * 1000000)
+            : (AP_AUTO_CLOSE_SEC * 1000000);
+        esp_timer_start_once(s_ap_auto_close_timer, interval_us);
     }
 }
 
@@ -657,6 +694,8 @@ static esp_err_t do_close_ap(void)
     }
 
     s_ap_active = false;
+    s_ap_close_wait_mqtt = false;
+    s_ap_wait_mqtt_elapsed = 0;
     led_notify_wifi_ap(false);
     memset(s_ap_ip_str, 0, sizeof(s_ap_ip_str));
 
@@ -752,6 +791,10 @@ static void fsm_task(void *arg)
                         s_state = WIFI_STATE_STA_CONNECTED;
                         stop_retry_timer();
                         stop_ap_idle_timer();
+
+                        s_ap_close_wait_mqtt = true;
+                        s_ap_wait_mqtt_elapsed = 0;
+                        start_ap_auto_close_timer();
                     } else {
                         wifi_cred_save(&msg.cred);
                         s_state = WIFI_STATE_AP;

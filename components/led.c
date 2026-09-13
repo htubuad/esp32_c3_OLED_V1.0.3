@@ -12,6 +12,11 @@
 #define BLINK_SLOW_US       300000
 #define BLINK_FAST_US       90000
 #define BLINK_IDLE_US       2000000
+#define BLINK_DOUBLE_SHORT_US  100000
+#define BLINK_DOUBLE_GAP_US    600000
+#define BLINK_BAD_US            75000
+#define BLINK_GOOD_FLASH_US     100000
+#define BLINK_GOOD_HOLD_US      2000000
 #define LED_ON_DUTY         500
 
 #define NOTIFY_US           80000
@@ -43,6 +48,7 @@ static void resolve_status_mode(void)
 
 static esp_timer_handle_t s_status_timer = NULL;
 static int s_blink_step = 0;
+static int s_good_step = 0;
 
 static void apply_pwm(int duty)
 {
@@ -131,6 +137,35 @@ static void status_timer_cb(void *arg)
         esp_timer_start_once(s_status_timer, BLINK_IDLE_US);
         break;
     }
+    case LED_MODE_BLINK_DOUBLE: {
+        int phase = s_blink_step % 4;
+        if (phase == 0)      apply_gpio(true);
+        else if (phase == 1) apply_gpio(false);
+        else if (phase == 2) apply_gpio(true);
+        else                 apply_gpio(false);
+        s_blink_step++;
+        uint32_t delay = (phase == 3) ? BLINK_DOUBLE_GAP_US : BLINK_DOUBLE_SHORT_US;
+        esp_timer_start_once(s_status_timer, delay);
+        break;
+    }
+    case LED_MODE_BLINK_GOOD: {
+        if (s_good_step < 6) {
+            bool on = (s_good_step % 2 == 0);
+            apply_gpio(on);
+            s_good_step++;
+            esp_timer_start_once(s_status_timer, BLINK_GOOD_FLASH_US);
+        } else {
+            apply_pwm(LED_ON_DUTY);
+        }
+        break;
+    }
+    case LED_MODE_BLINK_BAD: {
+        bool on = (s_blink_step % 2 == 0);
+        apply_gpio(on);
+        s_blink_step++;
+        esp_timer_start_once(s_status_timer, BLINK_BAD_US);
+        break;
+    }
     default:
         break;
     }
@@ -208,6 +243,7 @@ void led_status_mode_set(led_mode_t mode)
     s_saved_mode = LED_MODE_OFF;
     s_status_mode = mode;
     s_blink_step = 0;
+    s_good_step = 0;
 
     switch (mode) {
     case LED_MODE_OFF:
@@ -227,6 +263,18 @@ void led_status_mode_set(led_mode_t mode)
     case LED_MODE_BLINK_IDLE:
         apply_gpio(true);
         esp_timer_start_once(s_status_timer, BLINK_IDLE_US);
+        break;
+    case LED_MODE_BLINK_DOUBLE:
+        apply_gpio(true);
+        esp_timer_start_once(s_status_timer, BLINK_DOUBLE_SHORT_US);
+        break;
+    case LED_MODE_BLINK_GOOD:
+        apply_gpio(true);
+        esp_timer_start_once(s_status_timer, BLINK_GOOD_FLASH_US);
+        break;
+    case LED_MODE_BLINK_BAD:
+        apply_gpio(true);
+        esp_timer_start_once(s_status_timer, BLINK_BAD_US);
         break;
     default:
         apply_gpio(false);
@@ -256,4 +304,19 @@ void led_notify_wifi_idle(bool energy_save)
 {
     s_idle_energy_save = energy_save;
     resolve_status_mode();
+}
+
+void led_notify_ota_start(void)
+{
+    led_status_mode_set(LED_MODE_BLINK_DOUBLE);
+}
+
+void led_notify_ota_success(void)
+{
+    led_status_mode_set(LED_MODE_BLINK_GOOD);
+}
+
+void led_notify_ota_fail(void)
+{
+    led_status_mode_set(LED_MODE_BLINK_BAD);
 }
