@@ -66,12 +66,14 @@ static bool s_wifi_started = false;
 static bool s_sta_ever_connected = false;
 static esp_timer_handle_t s_retry_timer = NULL;
 static esp_timer_handle_t s_ap_auto_close_timer = NULL;
+static esp_timer_handle_t s_ap_idle_timer = NULL;
 
 #define MDNS_HOSTNAME "esp32c3"
 #define MAX_RETRY      3
 #define CONNECT_TIMEOUT_SEC  15
 #define WIFI_QUEUE_LEN  8
 #define AP_AUTO_CLOSE_SEC  60
+#define AP_IDLE_TIMEOUT_SEC 300
 
 static void start_rssi_timer(void);
 static void stop_rssi_timer(void);
@@ -79,6 +81,8 @@ static void start_retry_timer(void);
 static void stop_retry_timer(void);
 static void start_ap_auto_close_timer(void);
 static void stop_ap_auto_close_timer(void);
+static void start_ap_idle_timer(void);
+static void stop_ap_idle_timer(void);
 
 typedef struct {
     uint8_t cmd;
@@ -258,6 +262,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         led_notify_wifi_sta(true);
         s_retry_count = 0;
         stop_retry_timer();
+        stop_ap_idle_timer();
         mdns_register_sta();
         start_rssi_timer();
         xEventGroupSetBits(s_event_group, CONNECTED_BIT);
@@ -406,6 +411,41 @@ static void start_ap_auto_close_timer(void)
 static void stop_ap_auto_close_timer(void)
 {
     if (s_ap_auto_close_timer) esp_timer_stop(s_ap_auto_close_timer);
+}
+
+static void ap_idle_timeout_cb(void *arg)
+{
+    if (s_wifi_connected) {
+        stop_ap_idle_timer();
+        return;
+    }
+
+    if (s_ap_active) {
+        ESP_LOGW(TAG, "AP 配网模式 %ds 未配置，关闭配网节能（重启恢复）", AP_IDLE_TIMEOUT_SEC);
+        set_status("配网超时，重启恢复");
+        do_close_ap();
+        s_state = WIFI_STATE_IDLE;
+    }
+}
+
+static void start_ap_idle_timer(void)
+{
+    if (!s_ap_idle_timer) {
+        esp_timer_create_args_t args = {
+            .callback = ap_idle_timeout_cb, .name = "ap_idle_timeout",
+            .dispatch_method = ESP_TIMER_TASK,
+        };
+        esp_timer_create(&args, &s_ap_idle_timer);
+    }
+    if (s_ap_idle_timer) {
+        esp_timer_stop(s_ap_idle_timer);
+        esp_timer_start_once(s_ap_idle_timer, AP_IDLE_TIMEOUT_SEC * 1000000);
+    }
+}
+
+static void stop_ap_idle_timer(void)
+{
+    if (s_ap_idle_timer) esp_timer_stop(s_ap_idle_timer);
 }
 
 static esp_err_t do_wifi_init(void)
@@ -599,6 +639,7 @@ static esp_err_t do_close_ap(void)
 
     stop_retry_timer();
     stop_ap_auto_close_timer();
+    stop_ap_idle_timer();
     dns_server_stop();
     mdns_unregister_ap();
 
@@ -691,6 +732,7 @@ static void fsm_task(void *arg)
     } else {
         s_state = WIFI_STATE_AP;
         do_wifi_start_once(NULL, NULL);
+        start_ap_idle_timer();
     }
 
     while (1) {
@@ -703,6 +745,7 @@ static void fsm_task(void *arg)
                         wifi_cred_save(&msg.cred);
                         s_state = WIFI_STATE_STA_CONNECTED;
                         stop_retry_timer();
+                        stop_ap_idle_timer();
                     } else {
                         wifi_cred_save(&msg.cred);
                         s_state = WIFI_STATE_AP;
@@ -715,6 +758,7 @@ static void fsm_task(void *arg)
                     wifi_cred_clear();
                     s_state = WIFI_STATE_AP;
                     do_runtime_standalone_ap();
+                    start_ap_idle_timer();
                     break;
 
                 case CMD_CLOSE_AP:

@@ -135,7 +135,32 @@ app_main()
 
 **设计意图**：开机给 1 分钟窗口让手机能连 AP 进配置页，之后自动关 AP 省电。如果 1 分钟到了 STA 还没连上（密码错误等），AP 保持开启方便用户排查。
 
-### 3.4 事件处理
+### 3.4 AP 配网模式超时节能机制
+
+```
+触发场景（仅以下两种纯配网场景）:
+  1. 无凭证开机 → do_wifi_start_once(NULL, NULL) 后启动
+  2. CMD_CLEAR_AND_AP（恢复出厂）→ 清空凭证后启动
+
+不启动此定时器的场景:
+  - 有凭证但首次连接失败 → retry_timer 会后台重试，不是配网等待
+  - CMD_CONNECT_NEW 失败 → 凭证已保存，retry_timer 会后台重试
+
+超时逻辑（ap_idle_timeout_cb, 300s 单次触发）:
+  ├─ s_wifi_connected == true → stop_ap_idle_timer() 正常退出
+  └─ s_wifi_connected == false && s_ap_active == true:
+       do_close_ap() → s_state = IDLE  ← 关 AP 节能，WiFi 停转
+       用户重启设备 → 恢复正常启动流程（读凭证 / 配网）
+
+停止条件（任一触发即停）:
+  - IP_EVENT_STA_GOT_IP 事件（连上了）
+  - do_close_ap() 被调用（主动关 / timeout 触发）
+  - CMD_CONNECT_NEW 成功
+```
+
+**设计意图**：设备长时间配网等待无人操作是极大的功耗浪费。5分钟是合理的配网窗口，超时后彻底关 WiFi（`do_close_ap()` → `esp_wifi_set_mode(STA)` 实际此时没目标网络 → WiFi 基本零功耗）。用户发现配网超时后重启即可恢复。
+
+### 3.5 事件处理
 
 | 事件 | 处理 |
 |------|------|
@@ -163,6 +188,7 @@ static bool s_ap_active = false;           // 当前 AP 是否开启
 static esp_timer_handle_t s_retry_timer;   // 后台重试定时器
 static esp_timer_handle_t s_rssi_timer;    // RSSI 周期更新定时器（5秒）
 static esp_timer_handle_t s_ap_auto_close_timer;  // 开机 AP 自动关闭定时器（60秒）
+static esp_timer_handle_t s_ap_idle_timer;       // AP 配网超时定时器（300秒，纯配网场景）
 static EventGroupHandle_t s_event_group;   // CONNECTED_BIT / FAIL_BIT
 static QueueHandle_t s_cmd_queue;          // 外部命令队列（长度 8）
 ```
@@ -460,6 +486,7 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知�
 | s_rssi_timer | 5s | WiFi RSSI 周期更新 |
 | s_retry_timer | 15s→30s | AP 模式后台重连 WiFi |
 | s_ap_auto_close_timer | 60s | 开机 AP 自动关闭节能（有凭证时启动） |
+| s_ap_idle_timer | 300s | 配网模式超时关闭（无凭证/恢复出厂时启动） |
 | MQTT tick | 任务内 100ms | MQTT 状态机轮询 |
 
 ---
