@@ -58,11 +58,13 @@ static bool s_mdns_initialized = false;
 static bool s_mdns_sta_registered = false;
 static bool s_mdns_ap_registered = false;
 
-// 防重入标记
 static bool s_wifi_inited = false;
 static bool s_netif_created = false;
 static bool s_event_registered = false;
 static bool s_wifi_started = false;
+
+static bool s_sta_ever_connected = false;
+static esp_timer_handle_t s_retry_timer = NULL;
 
 #define MDNS_HOSTNAME "esp32c3"
 #define MAX_RETRY      3
@@ -71,6 +73,8 @@ static bool s_wifi_started = false;
 
 static void start_rssi_timer(void);
 static void stop_rssi_timer(void);
+static void start_retry_timer(void);
+static void stop_retry_timer(void);
 
 typedef struct {
     uint8_t cmd;
@@ -226,8 +230,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         memset(s_sta_ip_str, 0, sizeof(s_sta_ip_str));
         xEventGroupClearBits(s_event_group, CONNECTED_BIT);
         mdns_unregister_sta();
+        stop_rssi_timer();
 
-        if (s_sta_connect_allowed && s_retry_count < MAX_RETRY) {
+        if (s_sta_connect_allowed && s_sta_ever_connected) {
+            set_status_disconnected(disconn->reason);
+            s_retry_count++;
+            esp_wifi_connect();
+        } else if (s_sta_connect_allowed && s_retry_count < MAX_RETRY) {
             set_status_disconnected(disconn->reason);
             esp_wifi_connect();
             s_retry_count++;
@@ -241,8 +250,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         snprintf(s_sta_ip_str, sizeof(s_sta_ip_str), IPSTR, IP2STR(&event->ip_info.ip));
         s_wifi_connected = true;
+        s_sta_ever_connected = true;
         led_notify_wifi_sta(true);
         s_retry_count = 0;
+        stop_retry_timer();
         mdns_register_sta();
         start_rssi_timer();
         xEventGroupSetBits(s_event_group, CONNECTED_BIT);
@@ -261,6 +272,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, " IP:   %s", s_sta_ip_str);
         ESP_LOGI(TAG, " RSSI: %d dBm", rssi);
         ESP_LOGI(TAG, "========================");
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_LOST_IP) {
+        ESP_LOGW(TAG, "STA lost IP, renewing DHCP...");
+        if (s_netif_sta) {
+            esp_netif_dhcp_status_t status;
+            esp_netif_dhcpc_get_status(s_netif_sta, &status);
+            if (status == ESP_NETIF_DHCP_STARTED) {
+                esp_netif_dhcpc_stop(s_netif_sta);
+                esp_netif_dhcpc_start(s_netif_sta);
+            }
+        }
     }
 }
 
@@ -290,7 +311,66 @@ static void stop_rssi_timer(void)
     if (s_rssi_timer) esp_timer_stop(s_rssi_timer);
 }
 
-// ===== 安全幂等初始化，绝不 panic =====
+static void retry_timer_cb(void *arg)
+{
+    if (s_wifi_connected) {
+        stop_retry_timer();
+        return;
+    }
+
+    if (s_sta_connect_allowed && s_sta_ever_connected) {
+        esp_timer_start_once(s_retry_timer, 30000000);
+        return;
+    }
+
+    wifi_cred_t cred;
+    if (!wifi_cred_load(&cred) || strlen(cred.ssid) == 0) {
+        esp_timer_start_once(s_retry_timer, 30000000);
+        return;
+    }
+
+    ESP_LOGI(TAG, "后台定时器尝试重连: %s", cred.ssid);
+    set_status("正在重连路由器...");
+
+    s_sta_connect_allowed = true;
+    s_sta_ever_connected = true;
+    s_retry_count = 0;
+
+    wifi_config_t wifi_config = {0};
+    strncpy((char *)wifi_config.sta.ssid, cred.ssid, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.password, cred.password, sizeof(wifi_config.sta.password) - 1);
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    wifi_config.sta.pmf_cfg.capable = true;
+    wifi_config.sta.pmf_cfg.required = false;
+
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    esp_wifi_connect();
+
+    esp_timer_start_once(s_retry_timer, 30000000);
+}
+
+static void start_retry_timer(void)
+{
+    if (!s_retry_timer) {
+        esp_timer_create_args_t args = {
+            .callback = retry_timer_cb, .name = "sta_retry",
+            .dispatch_method = ESP_TIMER_TASK,
+        };
+        esp_timer_create(&args, &s_retry_timer);
+    }
+    if (s_retry_timer) {
+        esp_timer_stop(s_retry_timer);
+        esp_timer_start_once(s_retry_timer, 15000000);
+    }
+}
+
+static void stop_retry_timer(void)
+{
+    if (s_retry_timer) esp_timer_stop(s_retry_timer);
+}
+
 static esp_err_t do_wifi_init(void)
 {
     if (!s_event_group) s_event_group = xEventGroupCreate();
@@ -326,12 +406,16 @@ static esp_err_t do_wifi_init(void)
     }
 
     if (!s_event_registered) {
-        esp_event_handler_instance_t inst1, inst2;
+        esp_event_handler_instance_t inst1, inst2, inst3;
         err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                         &wifi_event_handler, NULL, &inst1);
         if (err == ESP_OK) {
             err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                             &wifi_event_handler, NULL, &inst2);
+        }
+        if (err == ESP_OK) {
+            err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_LOST_IP,
+                            &wifi_event_handler, NULL, &inst3);
         }
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
         s_event_registered = true;
@@ -415,7 +499,6 @@ static esp_err_t do_wifi_start_once(const char *sta_ssid, const char *sta_pass)
     return ESP_OK;
 }
 
-// ===== 运行时热切换凭证 (核心: disconnect → set_config → connect, 不 stop) =====
 static esp_err_t do_runtime_switch(const char *ssid, const char *password)
 {
     if (!ssid || strlen(ssid) == 0) return ESP_ERR_INVALID_ARG;
@@ -432,7 +515,6 @@ static esp_err_t do_runtime_switch(const char *ssid, const char *password)
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
 
-    // 热切换三步曲: 断 → 改 → 连 (AP 全程不动, web_server 不掉线)
     s_sta_connect_allowed = true;
     s_retry_count = 0;
 
@@ -452,7 +534,6 @@ static esp_err_t do_runtime_switch(const char *ssid, const char *password)
     return ESP_FAIL;
 }
 
-// 运行时放弃 STA 连接，保持 AP-only (用于密码错误回退配网)
 static void do_runtime_standalone_ap(void)
 {
     stop_rssi_timer();
@@ -463,21 +544,23 @@ static void do_runtime_standalone_ap(void)
     xEventGroupClearBits(s_event_group, CONNECTED_BIT | FAIL_BIT);
     mdns_unregister_sta();
 
-    wifi_config_t empty = {0};
-    esp_wifi_set_config(WIFI_IF_STA, &empty);
     esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     if (!s_ap_active) {
         do_open_ap();
     }
 
     set_status("AP配网模式，等待手机连接...");
+
+    start_retry_timer();
 }
 
 static esp_err_t do_close_ap(void)
 {
     if (!s_ap_active) return ESP_OK;
 
+    stop_retry_timer();
     dns_server_stop();
     mdns_unregister_ap();
 
@@ -547,7 +630,6 @@ static void fsm_task(void *arg)
 
     esp_err_t err = do_wifi_init();
     if (err != ESP_OK) {
-        // init 彻底失败，死循环等待命令（不会重启）
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
 
@@ -580,6 +662,7 @@ static void fsm_task(void *arg)
                     if (ret == ESP_OK) {
                         wifi_cred_save(&msg.cred);
                         s_state = WIFI_STATE_STA_CONNECTED;
+                        stop_retry_timer();
                     } else {
                         wifi_cred_save(&msg.cred);
                         s_state = WIFI_STATE_AP;
@@ -606,7 +689,22 @@ static void fsm_task(void *arg)
                 case CMD_OPEN_AP:
                     if (s_state == WIFI_STATE_STA_ONLY) {
                         do_open_ap();
-                        s_state = WIFI_STATE_STA_CONNECTED;
+                        wifi_cred_t cred2;
+                        if (wifi_cred_load(&cred2) && strlen(cred2.ssid) > 0) {
+                            ESP_LOGI(TAG, "CMD_OPEN_AP: 恢复 STA 重连 %s", cred2.ssid);
+                            s_sta_connect_allowed = true;
+                            s_sta_ever_connected = true;
+                            s_retry_count = 0;
+                            wifi_config_t wifi_config = {0};
+                            strncpy((char *)wifi_config.sta.ssid, cred2.ssid, sizeof(wifi_config.sta.ssid) - 1);
+                            strncpy((char *)wifi_config.sta.password, cred2.password, sizeof(wifi_config.sta.password) - 1);
+                            wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+                            wifi_config.sta.pmf_cfg.capable = true;
+                            wifi_config.sta.pmf_cfg.required = false;
+                            esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+                            esp_wifi_connect();
+                        }
+                        s_state = WIFI_STATE_AP;
                     }
                     break;
 
@@ -621,10 +719,10 @@ static void fsm_task(void *arg)
                     s_state = WIFI_STATE_AP;
                     do_runtime_standalone_ap();
                 } else if (s_state == WIFI_STATE_STA_ONLY) {
-                    ESP_LOGW(TAG, "STA disconnected in STA_ONLY, re-opening AP");
-                    do_open_ap();
-                    s_state = WIFI_STATE_AP;
+                    ESP_LOGW(TAG, "首次连接失败 in STA_ONLY，启动后台重试");
+                    start_retry_timer();
                 }
+                xEventGroupClearBits(s_event_group, FAIL_BIT);
             }
         }
     }
