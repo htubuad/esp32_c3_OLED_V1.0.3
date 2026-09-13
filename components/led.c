@@ -30,9 +30,12 @@ static bool s_ap_active = false;
 static bool s_sta_connected = false;
 static bool s_mqtt_connected = false;
 static bool s_idle_energy_save = false;
+static bool s_ota_active = false;
 
 static void resolve_status_mode(void)
 {
+    if (s_ota_active) return;
+
     if (s_mqtt_connected) {
         led_status_mode_set(LED_MODE_ON);
     } else if (s_sta_connected) {
@@ -308,15 +311,18 @@ void led_notify_wifi_idle(bool energy_save)
 
 void led_notify_ota_start(void)
 {
+    s_ota_active = true;
     led_status_mode_set(LED_MODE_BLINK_DOUBLE);
 }
 
 void led_notify_ota_success(void)
 {
+    s_ota_active = false;
     led_status_mode_set(LED_MODE_BLINK_GOOD);
 }
 
 void led_notify_ota_fail(void)
 {
+    s_ota_active = false;
     led_status_mode_set(LED_MODE_BLINK_BAD);
 }

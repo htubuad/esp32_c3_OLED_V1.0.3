@@ -122,9 +122,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         s_mqtt_connected = true;
         s_mqtt_state = MQTT_STATE_CONNECTED;
         led_notify_mqtt(true);
-        esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_USER, 0);
-        esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_OTA_UPGRADE, 0);
-        esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_OTA_UPGRADE_V2, 0);
+        int rc;
+        rc = esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_USER, 0);
+        if (rc < 0) ESP_LOGW(TAG, "subscribe USER failed rc=%d", rc);
+        rc = esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_OTA_UPGRADE, 0);
+        if (rc < 0) ESP_LOGW(TAG, "subscribe OTA_UPGRADE failed rc=%d", rc);
+        rc = esp_mqtt_client_subscribe(s_mqtt_client, ALIYUN_TOPIC_OTA_UPGRADE_V2, 0);
+        if (rc < 0) ESP_LOGW(TAG, "subscribe OTA_UPGRADE_V2 failed rc=%d", rc);
         {
             char inform[256];
             snprintf(inform, sizeof(inform),
@@ -343,8 +347,10 @@ static esp_err_t mqtt_create_and_start_client(void)
         .network.reconnect_timeout_ms = 5000,
         .network.timeout_ms = 10000,
         .network.disable_auto_reconnect = false,
-        .buffer.size = 512,
-        .buffer.out_size = 512,
+        .buffer.size = 2048,
+        .buffer.out_size = 2048,
+        .task.stack_size = 8192,
+        .task.priority = 5,
     };
     s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     if (!s_mqtt_client) {
@@ -480,7 +486,7 @@ void mqtt_init(void)
 {
     s_mqtt_state = MQTT_STATE_IDLE;
 
-    xTaskCreate(mqtt_manager_task, "mqtt_mgr", 3072, NULL, 4, NULL);
+    xTaskCreate(mqtt_manager_task, "mqtt_mgr", 4096, NULL, 4, NULL);
 }
 
 esp_err_t mqtt_publish_custom(const char *topic, const char *data, int qos)

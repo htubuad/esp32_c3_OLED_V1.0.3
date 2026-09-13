@@ -18,7 +18,7 @@
 static const char *TAG = "OTA";
 
 #define OTA_BUFFER_SIZE                 4096
-#define OTA_URL_MAX_LEN                 256
+#define OTA_URL_MAX_LEN                 512
 #define OTA_VERSION_MAX_LEN             32
 #define OTA_SIGN_MAX_LEN                128
 #define OTA_REBOOT_DELAY_MS             3000
@@ -42,6 +42,7 @@ typedef struct {
     char sign_method[16];
     bool force_upgrade;
     char msg_id[32];
+    int64_t fw_size;
 } ota_notify_t;
 
 static ota_state_t  s_state = OTA_STATE_IDLE;
@@ -80,7 +81,7 @@ static void report_progress(int percent)
     if (percent == s_progress && percent != 0) return;
     s_progress = percent;
 
-    char payload[256];
+    char payload[128];
     snprintf(payload, sizeof(payload),
         "{\"id\":\"ota\",\"version\":\"1.0\",\"params\":{\"step\":\"2\",\"desc\":\"%d\"}}",
         percent);
@@ -90,70 +91,113 @@ static void report_progress(int percent)
 
 static void report_result(const char *step, const char *desc)
 {
-    char payload[300];
+    char payload[128];
     snprintf(payload, sizeof(payload),
         "{\"id\":\"ota\",\"version\":\"1.0\",\"params\":{\"step\":\"%s\",\"desc\":\"%s\"}}",
         step, desc ? desc : "");
     mqtt_publish_custom(ALIYUN_OTA_TOPIC_POST, payload, 0);
 }
 
-static bool parse_notify(const char *json, ota_notify_t *out)
+static void trim_url_inplace(char *url)
+{
+    if (!url || url[0] == '\0') return;
+    int len = (int)strlen(url);
+    int start = 0, end = len;
+    while (start < end && (url[start] == '`' || url[start] == '"' || url[start] == '\''
+           || url[start] == ' ' || url[start] == '\t'))
+        start++;
+    while (end > start && (url[end - 1] == '`' || url[end - 1] == '"' || url[end - 1] == '\''
+           || url[end - 1] == ' ' || url[end - 1] == '\t'
+           || url[end - 1] == '\n' || url[end - 1] == '\r'))
+        end--;
+    int clean_len = end - start;
+    if (start > 0 || end < len) {
+        memmove(url, url + start, clean_len);
+        url[clean_len] = '\0';
+    }
+}
+
+static bool parse_notify(char *json, ota_notify_t *out)
 {
     cJSON *root = cJSON_Parse(json);
-    if (!root) return false;
-
-    out->fw_id[0] = '\0';
-    out->fw_url[0] = '\0';
-    out->fw_version[0] = '\0';
-    out->fw_sign[0] = '\0';
-    out->sign_method[0] = '\0';
-    out->force_upgrade = false;
-    out->msg_id[0] = '\0';
-
-    cJSON *id = cJSON_GetObjectItem(root, "id");
-    if (id && id->valuestring) {
-        strncpy(out->msg_id, id->valuestring, sizeof(out->msg_id) - 1);
+    if (!root) {
+        ESP_LOGE(TAG, "JSON parse failed");
+        return false;
     }
 
-    cJSON *params = cJSON_GetObjectItem(root, "params");
-    if (!params) { cJSON_Delete(root); return false; }
+    memset(out, 0, sizeof(*out));
 
-    cJSON *item = cJSON_GetObjectItem(params, "fwId");
+    cJSON *id = cJSON_GetObjectItem(root, "id");
+    if (id) {
+        if (id->valuestring) {
+            strncpy(out->msg_id, id->valuestring, sizeof(out->msg_id) - 1);
+        } else {
+            snprintf(out->msg_id, sizeof(out->msg_id), "%ld", (long)id->valueint);
+        }
+    }
+
+    cJSON *block = cJSON_GetObjectItem(root, "params");
+    if (!block) block = cJSON_GetObjectItem(root, "data");
+
+    if (!block) {
+        cJSON_Delete(root);
+        ESP_LOGE(TAG, "no params/data block");
+        return false;
+    }
+
+    cJSON *item;
+
+    item = cJSON_GetObjectItem(block, "fwId");
+    if (!item) item = cJSON_GetObjectItem(block, "fw_id");
     if (item && item->valuestring)
         strncpy(out->fw_id, item->valuestring, sizeof(out->fw_id) - 1);
 
-    item = cJSON_GetObjectItem(params, "fwUrl");
-    if (item && item->valuestring)
+    item = cJSON_GetObjectItem(block, "fwUrl");
+    if (!item) item = cJSON_GetObjectItem(block, "url");
+    if (item && item->valuestring) {
         strncpy(out->fw_url, item->valuestring, sizeof(out->fw_url) - 1);
+        trim_url_inplace(out->fw_url);
+    }
 
-    item = cJSON_GetObjectItem(params, "fwVersion");
+    item = cJSON_GetObjectItem(block, "fwVersion");
+    if (!item) item = cJSON_GetObjectItem(block, "version");
     if (item && item->valuestring)
         strncpy(out->fw_version, item->valuestring, sizeof(out->fw_version) - 1);
 
-    item = cJSON_GetObjectItem(params, "fwSign");
+    item = cJSON_GetObjectItem(block, "size");
+    if (item && !item->valuestring)
+        out->fw_size = item->valuedouble;
+
+    item = cJSON_GetObjectItem(block, "fwSign");
+    if (!item) item = cJSON_GetObjectItem(block, "sign");
+    if (!item) item = cJSON_GetObjectItem(block, "md5");
     if (item && item->valuestring)
         strncpy(out->fw_sign, item->valuestring, sizeof(out->fw_sign) - 1);
 
-    item = cJSON_GetObjectItem(params, "signMethod");
+    item = cJSON_GetObjectItem(block, "signMethod");
     if (item && item->valuestring)
         strncpy(out->sign_method, item->valuestring, sizeof(out->sign_method) - 1);
 
-    item = cJSON_GetObjectItem(params, "forceUpgrade");
+    item = cJSON_GetObjectItem(block, "forceUpgrade");
     if (item) out->force_upgrade = item->valueint ? true : false;
 
     cJSON_Delete(root);
 
-    return out->fw_url[0] != '\0';
+    if (out->fw_url[0] == '\0') {
+        ESP_LOGE(TAG, "fw_url empty after parse");
+        return false;
+    }
+
+    return true;
 }
 
 static void reply_upgrade(const char *msg_id, int code, const char *desc)
 {
-    char payload[300];
+    char payload[256];
     snprintf(payload, sizeof(payload),
         "{\"id\":\"%s\",\"code\":%d,\"desc\":\"%s\",\"version\":\"1.0\"}",
         msg_id ? msg_id : "ota", code, desc ? desc : "");
     mqtt_publish_custom(ALIYUN_OTA_TOPIC_UPGRADE_REPLY, payload, 0);
-    ESP_LOGI(TAG, "Upgrade reply: code=%d %s", code, desc ? desc : "");
 }
 
 static esp_err_t md5_init_ctx(void)
@@ -223,33 +267,59 @@ static ota_download_result_t do_http_download_once(const char *url, uint8_t *buf
                                                    int64_t *out_content_len,
                                                    int *out_last_reported)
 {
+    char clean_url[OTA_URL_MAX_LEN];
+    strncpy(clean_url, url, OTA_URL_MAX_LEN - 1);
+    clean_url[OTA_URL_MAX_LEN - 1] = '\0';
+    trim_url_inplace(clean_url);
+
+    if (strlen(clean_url) < 10) {
+        ESP_LOGE(TAG, "URL too short: %s", clean_url);
+        return OTA_DOWNLOAD_FAIL;
+    }
+
+    if (strncmp(clean_url, "https://", 8) != 0
+     && strncmp(clean_url, "http://", 7) != 0) {
+        ESP_LOGE(TAG, "URL scheme unsupported: %s", clean_url);
+        return OTA_DOWNLOAD_FAIL;
+    }
+
     esp_http_client_config_t http_cfg = {
-        .url = url,
+        .url = clean_url,
         .timeout_ms = OTA_HTTP_TIMEOUT_MS,
         .buffer_size = OTA_BUFFER_SIZE,
         .buffer_size_tx = OTA_BUFFER_SIZE,
         .keep_alive_enable = true,
+        .skip_cert_common_name_check = true,
     };
 
     esp_http_client_handle_t http = esp_http_client_init(&http_cfg);
     if (!http) {
-        ESP_LOGE(TAG, "http client init failed");
+        ESP_LOGE(TAG, "http init failed");
         return OTA_DOWNLOAD_FAIL;
     }
 
     esp_err_t err = esp_http_client_open(http, 0);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "http open failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "http open: %s", esp_err_to_name(err));
         esp_http_client_cleanup(http);
         return OTA_DOWNLOAD_FAIL;
     }
 
     int status = esp_http_client_get_status_code(http);
+    if (status == 0) {
+        int64_t clen = esp_http_client_fetch_headers(http);
+        if (clen < 0) {
+            ESP_LOGE(TAG, "fetch_headers: %s", esp_err_to_name((esp_err_t)clen));
+            esp_http_client_cleanup(http);
+            return OTA_DOWNLOAD_FAIL;
+        }
+        status = esp_http_client_get_status_code(http);
+    }
+
     int64_t content_len = esp_http_client_get_content_length(http);
-    ESP_LOGI(TAG, "HTTP status=%d content_len=%" PRId64 " (url=%s)", status, content_len, url);
 
     if (status != 200) {
-        ESP_LOGE(TAG, "HTTP status %d", status);
+        ESP_LOGE(TAG, "HTTP %d (content_len=%" PRId64 ")", status, content_len);
         esp_http_client_cleanup(http);
         return OTA_DOWNLOAD_FAIL;
     }
@@ -259,7 +329,6 @@ static ota_download_result_t do_http_download_once(const char *url, uint8_t *buf
 
     while (1) {
         if (s_cancel_requested) {
-            ESP_LOGW(TAG, "Download cancelled by user");
             esp_http_client_cleanup(http);
             return OTA_DOWNLOAD_CANCELLED;
         }
@@ -275,8 +344,6 @@ static ota_download_result_t do_http_download_once(const char *url, uint8_t *buf
         do {
             len = esp_http_client_read(http, (char *)buf, OTA_BUFFER_SIZE);
             if (len < 0 && read_retry < OTA_READ_RETRY_MAX) {
-                ESP_LOGW(TAG, "http read error (attempt %d/%d): %d, retrying...",
-                         read_retry + 1, OTA_READ_RETRY_MAX, len);
                 vTaskDelay(pdMS_TO_TICKS(OTA_READ_RETRY_INTERVAL_MS));
                 read_retry++;
             }
@@ -284,7 +351,7 @@ static ota_download_result_t do_http_download_once(const char *url, uint8_t *buf
 
         if (len == 0) break;
         if (len < 0) {
-            ESP_LOGE(TAG, "http read failed after %d retries", OTA_READ_RETRY_MAX);
+            ESP_LOGE(TAG, "http read failed after retries");
             esp_http_client_cleanup(http);
             return OTA_DOWNLOAD_FAIL;
         }
@@ -295,7 +362,7 @@ static ota_download_result_t do_http_download_once(const char *url, uint8_t *buf
 
         err = esp_ota_write(ota_handle, buf, len);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "ota write failed: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "ota write: %s", esp_err_to_name(err));
             esp_http_client_cleanup(http);
             return OTA_DOWNLOAD_FAIL;
         }
@@ -317,13 +384,32 @@ static ota_download_result_t do_http_download_once(const char *url, uint8_t *buf
     return OTA_DOWNLOAD_OK;
 }
 
+static bool parse_version_ints(const char *ver, int *major, int *minor, int *patch)
+{
+    if (!ver || ver[0] == '\0') return false;
+    int matched = sscanf(ver, "%d.%d.%d", major, minor, patch);
+    return matched >= 2;
+}
+
+static bool is_newer_version(const char *target_ver)
+{
+    if (!target_ver || target_ver[0] == '\0') return false;
+    if (strcmp(target_ver, APP_VERSION) == 0) return false;
+
+    int cur[3] = {0}, tgt[3] = {0};
+    if (!parse_version_ints(APP_VERSION, &cur[0], &cur[1], &cur[2])) return false;
+    if (!parse_version_ints(target_ver, &tgt[0], &tgt[1], &tgt[2])) return false;
+
+    if (tgt[0] != cur[0]) return tgt[0] > cur[0];
+    if (tgt[1] != cur[1]) return tgt[1] > cur[1];
+    return tgt[2] > cur[2];
+}
+
 static void ota_task(void *arg)
 {
     ota_notify_t *notify = (ota_notify_t *)arg;
     uint8_t *buf = NULL;
     esp_ota_handle_t ota_handle = 0;
-
-    ESP_LOGI(TAG, "Starting OTA: %s -> %s", notify->fw_url, notify->fw_version);
 
     strncpy(s_target_version, notify->fw_version, sizeof(s_target_version) - 1);
     s_target_version[sizeof(s_target_version) - 1] = '\0';
@@ -331,6 +417,8 @@ static void ota_task(void *arg)
     s_error_reason[0] = '\0';
     s_ota_in_progress = true;
     s_cancel_requested = false;
+
+    ESP_LOGI(TAG, "OTA start: %s -> %s", APP_VERSION, notify->fw_version);
 
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (!running) {
@@ -346,8 +434,16 @@ static void ota_task(void *arg)
         goto cleanup;
     }
 
-    ESP_LOGI(TAG, "Target partition: offset=0x%" PRIx32 " size=0x%" PRIx32,
-             target->address, target->size);
+    if (notify->fw_size > 0 && (uint64_t)notify->fw_size > target->size) {
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg),
+                 "fw too large: %" PRId64 " > partition 0x%" PRIx32,
+                 notify->fw_size, target->size);
+        ESP_LOGE(TAG, "%s", err_msg);
+        set_state(OTA_STATE_FAILED, err_msg);
+        reply_upgrade(notify->msg_id, -1, err_msg);
+        goto cleanup;
+    }
 
     buf = (uint8_t *)malloc(OTA_BUFFER_SIZE);
     if (!buf) {
@@ -369,7 +465,7 @@ static void ota_task(void *arg)
 
     while (1) {
         if (s_cancel_requested) {
-            set_state(OTA_STATE_FAILED, "cancelled by user");
+            set_state(OTA_STATE_FAILED, "cancelled");
             report_result("3", "cancelled");
             reply_upgrade(notify->msg_id, -1, "cancelled");
             goto cleanup;
@@ -383,8 +479,11 @@ static void ota_task(void *arg)
 
         err = esp_ota_begin(target, OTA_SIZE_UNKNOWN, &ota_handle);
         if (err != ESP_OK) {
-            set_state(OTA_STATE_FAILED, "esp_ota_begin failed");
-            reply_upgrade(notify->msg_id, -1, "ota begin failed");
+            char err_msg[128];
+            snprintf(err_msg, sizeof(err_msg), "ota_begin: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "%s", err_msg);
+            set_state(OTA_STATE_FAILED, err_msg);
+            reply_upgrade(notify->msg_id, -1, err_msg);
             goto cleanup;
         }
 
@@ -394,7 +493,6 @@ static void ota_task(void *arg)
 
         last_reported_percent = -1;
         retry_count++;
-        ESP_LOGI(TAG, "OTA download attempt %d/%d", retry_count, OTA_HTTP_RETRY_MAX + 1);
 
         ota_download_result_t dl_result = do_http_download_once(
             notify->fw_url, buf, ota_handle,
@@ -405,28 +503,28 @@ static void ota_task(void *arg)
         }
 
         if (dl_result == OTA_DOWNLOAD_CANCELLED) {
-            set_state(OTA_STATE_FAILED, "cancelled by user");
+            set_state(OTA_STATE_FAILED, "cancelled");
             report_result("3", "cancelled");
             reply_upgrade(notify->msg_id, -1, "cancelled");
             goto cleanup;
         }
 
-        if (dl_result == OTA_DOWNLOAD_WIFI_LOST) {
-            ESP_LOGW(TAG, "WiFi lost during download, attempt %d/%d",
-                     retry_count, OTA_HTTP_RETRY_MAX + 1);
-        }
-
         if (retry_count > OTA_HTTP_RETRY_MAX) {
             char err_msg[128];
             snprintf(err_msg, sizeof(err_msg),
-                     "http download failed after %d attempts", OTA_HTTP_RETRY_MAX + 1);
+                     "download failed after %d attempts", OTA_HTTP_RETRY_MAX + 1);
+            ESP_LOGE(TAG, "%s", err_msg);
             set_state(OTA_STATE_FAILED, err_msg);
             report_result("3", err_msg);
             reply_upgrade(notify->msg_id, -1, err_msg);
             goto cleanup;
         }
 
-        ESP_LOGW(TAG, "Retrying in %d ms...", OTA_HTTP_RETRY_INTERVAL_MS);
+        if (dl_result == OTA_DOWNLOAD_WIFI_LOST) {
+            ESP_LOGW(TAG, "WiFi lost, retry %d/%d", retry_count, OTA_HTTP_RETRY_MAX + 1);
+        } else {
+            ESP_LOGW(TAG, "HTTP error, retry %d/%d", retry_count, OTA_HTTP_RETRY_MAX + 1);
+        }
         vTaskDelay(pdMS_TO_TICKS(OTA_HTTP_RETRY_INTERVAL_MS));
     }
 
@@ -434,21 +532,18 @@ static void ota_task(void *arg)
         char err_msg[128];
         snprintf(err_msg, sizeof(err_msg),
                  "incomplete download %" PRId64 "/%" PRId64, total_read, content_len);
+        ESP_LOGE(TAG, "%s", err_msg);
         set_state(OTA_STATE_FAILED, err_msg);
         report_result("3", err_msg);
         reply_upgrade(notify->msg_id, -1, err_msg);
         goto cleanup;
     }
 
-    if (content_len == 0) {
-        ESP_LOGW(TAG, "No Content-Length header, downloaded %" PRId64 " bytes", total_read);
-    }
-
     if (target->size < (uint32_t)total_read) {
         char err_msg[128];
         snprintf(err_msg, sizeof(err_msg),
-                 "firmware too large: %" PRId64 " > partition 0x%" PRIx32,
-                 total_read, target->size);
+                 "firmware too large: %" PRId64, total_read);
+        ESP_LOGE(TAG, "%s", err_msg);
         set_state(OTA_STATE_FAILED, err_msg);
         report_result("3", err_msg);
         reply_upgrade(notify->msg_id, -1, err_msg);
@@ -458,18 +553,17 @@ static void ota_task(void *arg)
     report_progress(100);
     set_state(OTA_STATE_VERIFYING, NULL);
 
-    bool md5_present = (notify->fw_sign[0] != '\0'
+    bool md5_expected = (notify->fw_sign[0] != '\0'
                        && strcasecmp(notify->sign_method, "MD5") == 0);
 
-    if (md5_present) {
+    if (md5_expected) {
         if (!s_md5_ctx_ready) {
-            ESP_LOGW(TAG, "MD5 ctx not ready but sign provided, skip verify");
+            ESP_LOGW(TAG, "MD5 ctx not ready, skip verify");
         } else {
             char md5_hex[33] = {0};
             if (md5_final_hex(md5_hex, sizeof(md5_hex)) == ESP_OK) {
-                ESP_LOGI(TAG, "MD5 local: %s", md5_hex);
-                ESP_LOGI(TAG, "MD5 expect: %s", notify->fw_sign);
                 if (!hex_equal_ignore_case(md5_hex, notify->fw_sign)) {
+                    ESP_LOGE(TAG, "MD5 mismatch: local=%s expect=%s", md5_hex, notify->fw_sign);
                     set_state(OTA_STATE_FAILED, "MD5 mismatch");
                     report_result("3", "MD5 mismatch");
                     reply_upgrade(notify->msg_id, -1, "MD5 mismatch");
@@ -480,14 +574,14 @@ static void ota_task(void *arg)
         }
     } else {
         md5_cleanup();
-        ESP_LOGI(TAG, "No signature provided, skip MD5 verification");
     }
 
     err = esp_ota_end(ota_handle);
     ota_handle = 0;
     if (err != ESP_OK) {
         char err_msg[128];
-        snprintf(err_msg, sizeof(err_msg), "esp_ota_end failed: %s", esp_err_to_name(err));
+        snprintf(err_msg, sizeof(err_msg), "ota_end: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "%s", err_msg);
         set_state(OTA_STATE_FAILED, err_msg);
         report_result("3", err_msg);
         reply_upgrade(notify->msg_id, -1, err_msg);
@@ -497,7 +591,8 @@ static void ota_task(void *arg)
     err = esp_ota_set_boot_partition(target);
     if (err != ESP_OK) {
         char err_msg[128];
-        snprintf(err_msg, sizeof(err_msg), "set boot failed: %s", esp_err_to_name(err));
+        snprintf(err_msg, sizeof(err_msg), "set_boot: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "%s", err_msg);
         set_state(OTA_STATE_FAILED, err_msg);
         report_result("3", err_msg);
         reply_upgrade(notify->msg_id, -1, err_msg);
@@ -510,7 +605,7 @@ static void ota_task(void *arg)
 
     set_state(OTA_STATE_REBOOT_WAIT, NULL);
     led_notify_ota_success();
-    ESP_LOGI(TAG, "OTA success, rebooting in %d ms...", OTA_REBOOT_DELAY_MS);
+    ESP_LOGI(TAG, "OTA success: %s, rebooting...", notify->fw_version);
     vTaskDelay(pdMS_TO_TICKS(OTA_REBOOT_DELAY_MS));
     esp_restart();
 
@@ -526,6 +621,7 @@ cleanup:
     }
     if (s_state == OTA_STATE_FAILED) {
         led_notify_ota_fail();
+        ESP_LOGE(TAG, "OTA failed: %s", s_error_reason);
     }
     s_ota_in_progress = false;
     s_cancel_requested = false;
@@ -539,42 +635,24 @@ cleanup:
     vTaskDelete(NULL);
 }
 
-static bool is_newer_version(const char *target_ver)
-{
-    if (!target_ver || target_ver[0] == '\0') return false;
-    if (strcmp(target_ver, APP_VERSION) == 0) return false;
-
-    int cur[3] = {0}, tgt[3] = {0};
-    sscanf(APP_VERSION, "%d.%d.%d", &cur[0], &cur[1], &cur[2]);
-    sscanf(target_ver, "%d.%d.%d", &tgt[0], &tgt[1], &tgt[2]);
-
-    if (tgt[0] != cur[0]) return tgt[0] > cur[0];
-    if (tgt[1] != cur[1]) return tgt[1] > cur[1];
-    return tgt[2] > cur[2];
-}
-
 void ota_handle_mqtt_msg(const char *topic, int topic_len,
                          const char *data, int data_len)
 {
     if (!topic || !data) return;
     if (s_ota_in_progress) {
-        ESP_LOGW(TAG, "OTA already in progress, ignoring new notify");
+        ESP_LOGW(TAG, "OTA already in progress");
         return;
     }
 
-    char topic_buf[64] = {0};
-    int tlen = topic_len < (int)sizeof(topic_buf) - 1 ? topic_len : (int)sizeof(topic_buf) - 1;
-    memcpy(topic_buf, topic, tlen);
-    topic_buf[tlen] = '\0';
+    if (topic_len < 10) return;
 
-    if (strstr(topic_buf, "/ota/upgrade") == NULL) return;
+    if (strstr(topic, "/ota/upgrade") == NULL
+     && strstr(topic, "/ota/device/upgrade") == NULL) return;
 
-    char data_buf[512] = {0};
+    char data_buf[2048] = {0};
     int dlen = data_len < (int)sizeof(data_buf) - 1 ? data_len : (int)sizeof(data_buf) - 1;
     memcpy(data_buf, data, dlen);
     data_buf[dlen] = '\0';
-
-    ESP_LOGI(TAG, "OTA notify received: %s", data_buf);
 
     ota_notify_t *notify = (ota_notify_t *)calloc(1, sizeof(ota_notify_t));
     if (!notify) {
@@ -583,21 +661,19 @@ void ota_handle_mqtt_msg(const char *topic, int topic_len,
     }
 
     if (!parse_notify(data_buf, notify)) {
-        ESP_LOGE(TAG, "parse OTA notify failed");
         reply_upgrade(notify->msg_id, -1, "parse failed");
         free(notify);
         return;
     }
 
     if (!notify->force_upgrade && !is_newer_version(notify->fw_version)) {
-        ESP_LOGW(TAG, "Version not newer: current=%s target=%s", APP_VERSION, notify->fw_version);
+        ESP_LOGI(TAG, "Version not newer: current=%s target=%s", APP_VERSION, notify->fw_version);
         reply_upgrade(notify->msg_id, 200, "not newer");
         free(notify);
         return;
     }
 
     if (!mqtt_is_connected()) {
-        ESP_LOGE(TAG, "MQTT not connected, defer OTA");
         reply_upgrade(notify->msg_id, -1, "mqtt not connected");
         free(notify);
         return;
@@ -606,7 +682,7 @@ void ota_handle_mqtt_msg(const char *topic, int topic_len,
     s_ota_in_progress = true;
     if (xTaskCreate(ota_task, "ota_task", OTA_TASK_STACK_SIZE,
                     notify, OTA_TASK_PRIORITY, &s_ota_task_handle) != pdPASS) {
-        ESP_LOGE(TAG, "xTaskCreate ota_task failed");
+        ESP_LOGE(TAG, "xTaskCreate failed");
         s_ota_in_progress = false;
         reply_upgrade(notify->msg_id, -1, "task create failed");
         free(notify);
@@ -653,7 +729,9 @@ void ota_init(void)
         esp_ota_img_states_t img_state;
         if (esp_ota_get_state_partition(running, &img_state) == ESP_OK) {
             if (img_state == ESP_OTA_IMG_PENDING_VERIFY) {
-                ESP_LOGW(TAG, "Previous OTA pending verify -> mark valid");
+                ESP_LOGI(TAG, "========== OTA UPGRADE OK ==========");
+                ESP_LOGI(TAG, "Firmware updated -> %s", APP_VERSION);
+                ESP_LOGI(TAG, "=====================================");
                 esp_ota_mark_app_valid_cancel_rollback();
             } else if (img_state == ESP_OTA_IMG_ABORTED) {
                 ESP_LOGW(TAG, "Previous OTA aborted, device may have rolled back");
@@ -661,5 +739,5 @@ void ota_init(void)
         }
     }
 
-    ESP_LOGI(TAG, "OTA manager initialized, current version: %s", APP_VERSION);
+    ESP_LOGI(TAG, "OTA init, version: %s", APP_VERSION);
 }

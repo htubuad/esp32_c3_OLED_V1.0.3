@@ -13,7 +13,7 @@
 
 #define MQTT_RX_MAX_ENTRIES 8
 #define MQTT_RX_TOPIC_LEN   64
-#define MQTT_RX_DATA_LEN    256
+#define MQTT_RX_DATA_LEN    2048
 
 typedef struct {
     char topic[MQTT_RX_TOPIC_LEN];

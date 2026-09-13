@@ -1,6 +1,6 @@
 # ESP32-C3 固件架构说明
 
-> 版本: V1.3.3 | 芯片: ESP32-C3 | IDF: v6.1-rc1 / v5.5.5
+> 版本: V1.3.4 | 芯片: ESP32-C3 | IDF: v6.1-rc1 / v5.5.5
 
 ---
 
@@ -298,6 +298,9 @@ void wifi_update_rssi(void);
 - **RX 环形缓冲区**：8 条 `mqtt_rx_entry_t`，保存最近收到的消息
 - **阿里云参数上报**：`mqtt_publish_aliyun_params(json)` 用 `/sys/{device}/thing/event/property/post` 主题
 - **OTA 消息分发**：RX 事件检测到 topic 含 `/ota/upgrade` → 直接调用 `ota_handle_mqtt_msg()` 进入 OTA 流程（跳过常规 JSON 解析）
+- **MQTT 缓冲区**：`.buffer.size` / `.buffer.out_size` = **2048**（原为 512，防止 OTA 推送 JSON 被内部截断）
+- **内部任务栈**：`.task.stack_size` = **8192**（显式设置，防止事件回调内 subscribe + publish 栈溢出）
+- **事件回调内执行 subscribe**：MQTT_EVENT_CONNECTED 里直接调 esp_mqtt_subscribe 三个 OTA 主题，返回值检查 + 错误日志
 
 ### 4.3 对外 API
 
@@ -369,7 +372,7 @@ ota_handle_mqtt_msg()
 | `/sys/{pk}/{dn}/ota/upgrade_reply` | 对每次推送的即时回复（code=200 接收 / code=-1 拒绝） |
 | `/sys/{pk}/{dn}/ota/post` | 进度上报（step="2" + percent），最终结果（step="0" 成功 / step="3" 失败） |
 
-### 5.4 HTTP 下载（含重试 & WiFi 防护）
+### 5.4 HTTP 下载（含重试 & WiFi 防护 & TLS）
 
 - **缓冲区**：4096 字节（`OTA_BUFFER_SIZE`）
 - **超时**：30s（`OTA_HTTP_TIMEOUT_MS`）
@@ -379,7 +382,43 @@ ota_handle_mqtt_msg()
 - **单次读取重试**：HTTP 读失败后最多 **2 次**（`OTA_READ_RETRY_MAX`），间隔 **200ms**（`OTA_READ_RETRY_INTERVAL_MS`）
 - **WiFi 断开检测**：每次读取前检查 `wifi_is_connected()`，WiFi 断了立即中止（`OTA_DOWNLOAD_WIFI_LOST`）
 - **用户取消**：`ota_abort()` 设 `s_cancel_requested=true`，下载循环检测后返回 `OTA_DOWNLOAD_CANCELLED`
-- **分区大小校验**：下载完成后比对 `target->size` 与实际固件大小，超分区容量则中止
+- **分区大小预校验**：下载前比对阿里云推送的 `size` 字段与目标分区 `target->size`，超分区容量则提前中止（避免下载到一半才发现）
+
+#### URL 预处理（trim_url_inplace）
+
+阿里云 OTA 推送的 URL 可能带反引号 `` ` `` 或引号，HTTP 请求前统一 trim：
+- 前后的反引号、双引号、单引号、空格、制表符、换行符全部去除
+- 原字符串就地 `memmove`，不分配额外内存
+- 调用两次：`parse_notify` 里 trim 一次，`do_http_download_once` 里兜底 trim 一次（防御性编程）
+
+#### TLS / HTTPS 配置（sdkconfig 强制）
+
+阿里云 OSS 只支持 HTTPS，HTTP 静默拒绝连接。ESP-IDF v6.x 默认强制 TLS 证书验证，必须显式关闭：
+
+```ini
+# sdkconfig
+CONFIG_ESP_TLS_INSECURE=y                  # 允许 insecure TLS 模式
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y   # 跳过服务器证书验证
+```
+
+HTTP 客户端配置：
+```c
+.skip_cert_common_name_check = true,       // 同时跳过 CN/SAN 主机名校验
+```
+
+**安全补偿**：传输层不验证，固件完整性由上层 **MD5 签名校验**（下载过程中累积哈希）保证。
+
+#### HTTP 响应头 fetch_headers 兜底
+
+ESP-IDF v6.x 的 `esp_http_client_open` 在某些场景下返回 OK 但 `status_code=0`（响应头未自动解析），此时主动调 `esp_http_client_fetch_headers()` 显式读取响应头，确保拿到正确的 status 和 content_len。
+
+#### HTTP URL scheme 校验
+
+下载前检查 URL 是否以 `https://` 或 `http://` 开头，避免脏数据导致 HTTP 客户端内部 panic。
+
+#### 版本比较防御
+
+`is_newer_version()` 调用 `parse_version_ints()` 封装 sscanf，只有 sscanf 匹配到 ≥ 2 个字段才返回 true，防止异常版本字符串导致 sscanf 返回 0 比较出错。
 
 ### 5.5 MD5 校验
 
@@ -415,9 +454,11 @@ if (img_state == ESP_OTA_IMG_ABORTED) {
 
 | OTA 阶段 | LED 函数 | LED 表现 |
 |----------|----------|---------|
-| 下载开始 | `led_notify_ota_start()` | **双闪**：短亮→短灭→短亮→长灭（BLINK_DOUBLE） |
-| 下载成功 | `led_notify_ota_success()` | **3 次快闪 → 常亮**（BLINK_GOOD，占空比 500） |
-| 失败 | `led_notify_ota_fail()` | **快速闪烁**（BLINK_BAD，75ms 周期） |
+| 下载开始 | `led_notify_ota_start()` | **双闪**：短亮→短灭→短亮→长灭（BLINK_DOUBLE）+ 设 `s_ota_active=true` |
+| 下载成功 | `led_notify_ota_success()` | **3 次快闪 → 常亮**（BLINK_GOOD，占空比 500）+ `s_ota_active=false` |
+| 失败 | `led_notify_ota_fail()` | **快速闪烁**（BLINK_BAD，75ms 周期）+ `s_ota_active=false` |
+
+**防覆盖机制**：`resolve_status_mode()` 里第一行检查 `if (s_ota_active) return;`，OTA 期间 LED 完全由 OTA 状态决定，MQTT/WiFi 状态变化不会覆盖掉下载中双闪效果。
 
 ### 5.9 关键变量
 
@@ -710,7 +751,34 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知 
 
 ---
 
-## 16. 已知行为 & 设计决策
+## 16.1 sdkconfig 关键配置
+
+### OTA / TLS 相关
+
+```ini
+CONFIG_ESP_TLS_INSECURE=y                  # 允许 insecure TLS（OTA HTTPS 必需）
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y   # 跳过服务器证书验证（阿里云 OSS CA 不在 Mozilla 包里）
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y        # 编译 Mozilla 根证书包（MQTT 连接阿里云仍需要）
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y      # crash 时打印 backtrace 后自动重启（方便调试）
+```
+
+### Flash / OTA 分区
+
+```ini
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+```
+
+### 日志级别
+
+```ini
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y             # 默认 Info
+CONFIG_LOG_MAX_LEVEL_VERBOSE=y             # 编译时保留 verbose 日志（runtime 可调）
+```
+
+---
+
+## 16.2 已知行为 & 设计决策
 
 1. **AP 常开策略**：即使 STA 成功连上，AP 也不关（APSTA 共存模式），手机随时能连 AP 进配置页
 2. **运行时掉线永不放弃**：`s_sta_ever_connected` 标志确保连上过后掉线会无限重试
@@ -722,6 +790,10 @@ static esp_timer_handle_t s_status_timer;  // 唯一定时器（闪烁 + 通知 
 8. **OTA 重入保护**：`s_ota_in_progress` 标志防止 MQTT 连续推送多个 OTA 消息导致并发下载
 9. **OTA 版本比较只认 x.y.z**：`is_newer_version()` 用 sscanf 解析三位数字，非标准格式一律认为版本不更新
 10. **OTA 无 MD5 校验降级**：MD5 初始化失败不中止 OTA，signMethod≠MD5 或 fwSign 为空时跳过校验直接写入
+11. **ESP-IDF v6.x TLS 默认强制证书验证**：必须 `CONFIG_ESP_TLS_INSECURE=y` + `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y`，否则 HTTPS 连接失败。传输层安全由上层 MD5 签名补偿
+12. **HTTP status_code=0 必须 fetch_headers 兜底**：ESP-IDF v6.x 的 `esp_http_client_open` 在某些场景返回 OK 但不自动解析响应头，必须主动 `esp_http_client_fetch_headers()`
+13. **阿里云 OTA URL 可能带反引号**：推送的 JSON 里 URL 字段有 `` ` `` 前后包裹，HTTP 请求前必须 trim
+14. **MQTT 内部任务栈必须显式设 8192**：事件回调内执行 subscribe + publish 需要足够栈空间，默认值可能导致 crash
 
 ---
 
