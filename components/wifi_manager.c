@@ -83,6 +83,7 @@ static void start_ap_auto_close_timer(void);
 static void stop_ap_auto_close_timer(void);
 static void start_ap_idle_timer(void);
 static void stop_ap_idle_timer(void);
+static esp_err_t do_close_ap(void);
 
 typedef struct {
     uint8_t cmd;
