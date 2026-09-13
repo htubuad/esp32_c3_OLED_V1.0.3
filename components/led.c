@@ -12,6 +12,7 @@
 #define BLINK_SLOW_US       300000
 #define BLINK_FAST_US       90000
 #define BLINK_IDLE_US       2000000
+#define LED_ON_DUTY         500
 
 #define NOTIFY_US           80000
 
@@ -76,7 +77,7 @@ static void resume_status_mode(void)
         esp_timer_start_once(s_status_timer, BLINK_IDLE_US);
         break;
     case LED_MODE_ON:
-        apply_gpio(true);
+        apply_pwm(LED_ON_DUTY);
         break;
     case LED_MODE_OFF:
     default:
@@ -213,7 +214,7 @@ void led_status_mode_set(led_mode_t mode)
         apply_gpio(false);
         break;
     case LED_MODE_ON:
-        apply_gpio(true);
+        apply_pwm(LED_ON_DUTY);
         break;
     case LED_MODE_BLINK_SLOW:
         apply_gpio(true);

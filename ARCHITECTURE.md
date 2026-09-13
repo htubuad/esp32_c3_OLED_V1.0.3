@@ -333,13 +333,13 @@ const char *mqtt_get_last_rx_data(void);
 
 ### 8.2 模式
 
-| 模式 | 说明 | 周期 |
-|------|------|------|
-| LED_MODE_OFF | 灭（占空比 0） | - |
-| LED_MODE_ON | 常亮（占空比 1023） | - |
-| LED_MODE_BLINK_SLOW | 慢闪 | 300ms |
-| LED_MODE_BLINK_FAST | 快闪 | 90ms |
-| LED_MODE_BLINK_IDLE | 超慢闪（节能态） | **2000ms** |
+| 模式 | 说明 | 周期 | PWM 占空比 |
+|------|------|------|-----------|
+| LED_MODE_OFF | 灭 | - | 0 |
+| LED_MODE_ON | 常亮（MQTT 连上） | - | **500 (49%)** |
+| LED_MODE_BLINK_SLOW | 慢闪 | 300ms | 1023 |
+| LED_MODE_BLINK_FAST | 快闪 | 90ms | 1023 |
+| LED_MODE_BLINK_IDLE | 超慢闪（节能态） | 2000ms | 1023 |
 
 ### 8.3 状态优先级（resolve_status_mode）
 
