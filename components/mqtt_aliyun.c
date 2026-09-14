@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -67,6 +68,8 @@ static float  s_set_a   = 0.0f;
 static float  s_set_b   = 0.0f;
 static int    s_field1_data = 0;
 static int    s_field2_data = 0;
+static int    s_sim_temp = 25;
+static int    s_sim_temp2 = 0;
 
 static void rx_history_add(const char *topic, const char *data)
 {
@@ -446,16 +449,47 @@ static void mqtt_manager_task(void *arg)
 
         case MQTT_STATE_CONNECTED:
             if (!wifi_is_connected()) {
-                // ESP_LOGI(TAG, "WiFi disconnected, waiting...");
                 s_mqtt_state = MQTT_STATE_WAIT_WIFI;
                 break;
             }
             if (!s_mqtt_connected) {
-                // ESP_LOGI(TAG, "MQTT lost, recreate...");
                 s_mqtt_state = MQTT_STATE_ERROR;
                 break;
             }
-            vTaskDelay(pdMS_TO_TICKS(2000));
+            {
+                float pub_temp = roundf(temp_sensor_get() * 10.0f) / 10.0f;
+                int   pub_rssi = wifi_is_connected() ? wifi_get_rssi() : -127;
+                int   pub_sw   = (sw0_get() ? 1 : 0) | (sw_bit1_get() ? 2 : 0);
+                int   pub_light = switch1_get() ? 1 : 0;
+                int   pub_power = power_get() ? 1 : 0;
+                int delta = (int)(esp_random() % 7) - 3;
+                s_sim_temp += delta;
+                if (s_sim_temp < -50) s_sim_temp = -50;
+                if (s_sim_temp > 110) s_sim_temp = 110;
+                s_field1_data = s_sim_temp;
+
+                int delta2 = (int)(esp_random() % 7) - 3;
+                s_sim_temp2 += delta2;
+                if (s_sim_temp2 < -50) s_sim_temp2 = -50;
+                if (s_sim_temp2 > 50) s_sim_temp2 = 50;
+                s_field2_data = s_sim_temp2;
+                char pub_buf[256];
+                int n = snprintf(pub_buf, sizeof(pub_buf),
+                    "{\"DeviceID\":\"%s\",\"Dir\":\"C>D\",\"Temp\":%.1f,\"RSSI\":%d"
+                    ",\"Switches\":%d,\"light\":%d,\"power\":%d"
+                    ",\"Field1\":%.2f,\"Field1_data\":%d"
+                    ",\"Field2\":%.2f,\"Field2_data\":%d"
+                    ",\"Set1\":%.2f,\"Set2\":%.2f}",
+                    DEVICE_ID, pub_temp, pub_rssi,
+                    pub_sw, pub_light, pub_power,
+                    s_field_a, s_field1_data,
+                    s_field_b, s_field2_data,
+                    s_set_a, s_set_b);
+                if (n > 0 && n < (int)sizeof(pub_buf)) {
+                    mqtt_publish_custom(ALIYUN_TOPIC_USER_UPDATE, pub_buf, 0);
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(5000));
             break;
 
         case MQTT_STATE_ERROR:
