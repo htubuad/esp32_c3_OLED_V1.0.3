@@ -15,26 +15,29 @@
 #define BLINK_DOUBLE_SHORT_US  100000
 #define BLINK_DOUBLE_GAP_US    600000
 #define BLINK_BAD_US            75000
+#define BLINK_UNDERVOLT_US      50000
 #define BLINK_GOOD_FLASH_US     100000
 #define BLINK_GOOD_HOLD_US      2000000
 #define LED_ON_DUTY         500
 
 #define NOTIFY_US           80000
 
-static led_mode_t s_status_mode = LED_MODE_OFF;
-static led_mode_t s_saved_mode = LED_MODE_OFF;
-static bool s_notify_active = false;
-static int s_notify_step = 0;
+static volatile led_mode_t s_status_mode = LED_MODE_OFF;
+static volatile led_mode_t s_saved_mode = LED_MODE_OFF;
+static volatile bool s_notify_active = false;
+static volatile int s_notify_step = 0;
 
-static bool s_ap_active = false;
-static bool s_sta_connected = false;
-static bool s_mqtt_connected = false;
-static bool s_idle_energy_save = false;
-static bool s_ota_active = false;
+static volatile bool s_ap_active = false;
+static volatile bool s_sta_connected = false;
+static volatile bool s_mqtt_connected = false;
+static volatile bool s_idle_energy_save = false;
+static volatile bool s_ota_active = false;
 
 static void resolve_status_mode(void)
 {
     if (s_ota_active) return;
+
+    if (s_status_mode == LED_MODE_BLINK_UNDERVOLT) return;
 
     if (s_mqtt_connected) {
         led_status_mode_set(LED_MODE_ON);
@@ -50,8 +53,8 @@ static void resolve_status_mode(void)
 }
 
 static esp_timer_handle_t s_status_timer = NULL;
-static int s_blink_step = 0;
-static int s_good_step = 0;
+static volatile int s_blink_step = 0;
+static volatile int s_good_step = 0;
 
 static void apply_pwm(int duty)
 {
@@ -87,6 +90,14 @@ static void resume_status_mode(void)
         break;
     case LED_MODE_ON:
         apply_pwm(LED_ON_DUTY);
+        break;
+    case LED_MODE_BLINK_BAD:
+        apply_gpio(true);
+        esp_timer_start_once(s_status_timer, BLINK_BAD_US);
+        break;
+    case LED_MODE_BLINK_UNDERVOLT:
+        apply_gpio(true);
+        esp_timer_start_once(s_status_timer, BLINK_UNDERVOLT_US);
         break;
     case LED_MODE_OFF:
     default:
@@ -169,12 +180,19 @@ static void status_timer_cb(void *arg)
         esp_timer_start_once(s_status_timer, BLINK_BAD_US);
         break;
     }
+    case LED_MODE_BLINK_UNDERVOLT: {
+        bool on = (s_blink_step % 2 == 0);
+        apply_gpio(on);
+        s_blink_step++;
+        esp_timer_start_once(s_status_timer, BLINK_UNDERVOLT_US);
+        break;
+    }
     default:
         break;
     }
 }
 
-void led_init(void)
+esp_err_t led_init(void)
 {
     gpio_reset_pin(LED_STATUS_GPIO);
 
@@ -185,7 +203,8 @@ void led_init(void)
         .freq_hz = LEDC_FREQ_HZ,
         .clk_cfg = LEDC_AUTO_CLK,
     };
-    ledc_timer_config(&timer_cfg);
+    esp_err_t ret = ledc_timer_config(&timer_cfg);
+    if (ret != ESP_OK) return ret;
 
     ledc_channel_config_t chan_cfg = {
         .gpio_num = LED_STATUS_GPIO,
@@ -195,7 +214,9 @@ void led_init(void)
         .duty = 0,
         .hpoint = 0,
     };
-    ledc_channel_config(&chan_cfg);
+    ret = ledc_channel_config(&chan_cfg);
+    if (ret != ESP_OK) return ret;
+
     ledc_set_duty(LEDC_SPEED_MODE, LEDC_CHANNEL, 0);
     ledc_update_duty(LEDC_SPEED_MODE, LEDC_CHANNEL);
 
@@ -204,7 +225,10 @@ void led_init(void)
         .name = "led_status",
         .dispatch_method = ESP_TIMER_TASK,
     };
-    esp_timer_create(&status_args, &s_status_timer);
+    ret = esp_timer_create(&status_args, &s_status_timer);
+    if (ret != ESP_OK) return ret;
+
+    return ESP_OK;
 }
 
 static void notify_blink_once(void)
@@ -278,6 +302,10 @@ void led_status_mode_set(led_mode_t mode)
     case LED_MODE_BLINK_BAD:
         apply_gpio(true);
         esp_timer_start_once(s_status_timer, BLINK_BAD_US);
+        break;
+    case LED_MODE_BLINK_UNDERVOLT:
+        apply_gpio(true);
+        esp_timer_start_once(s_status_timer, BLINK_UNDERVOLT_US);
         break;
     default:
         apply_gpio(false);

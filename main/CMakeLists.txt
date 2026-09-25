@@ -2,14 +2,19 @@ idf_component_register(SRCS "main.c"
                     "../components/switch.c"
                     "../components/led.c"
                     "../components/temp_sensor.c"
+                    "../components/ntc_sensor.c"
+                    "../components/power_monitor.c"
                     "../components/wifi_manager.c"
                     "../components/dns_server.c"
                     "../components/sntp_sync.c"
                     "../components/mqtt_aliyun.c"
                     "../components/web_server.c"
                     "../components/ota_manager.c"
+                    "../components/tf_card.c"
+                    "../components/pcf8563.c"
+                    "../components/history_query.c"
                     INCLUDE_DIRS "." "../components"
-                    REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_driver_gpio esp_driver_ledc esp_http_server esp_timer mqtt mbedtls esp_driver_tsens heap lwip cjson app_update esp_http_client esp_partition)
+                    REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_driver_gpio esp_driver_ledc esp_driver_i2c esp_http_server esp_timer mqtt mbedtls esp_driver_tsens esp_adc heap lwip cjson app_update esp_http_client esp_partition esp_driver_spi esp_driver_sdspi sdmmc fatfs)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE LWIP_MDNS_RESPONDER=1 MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS)
 
@@ -18,3 +23,5 @@ target_sources(${COMPONENT_LIB} PRIVATE
   $ENV{IDF_PATH}/components/lwip/lwip/src/apps/mdns/mdns_out.c
   $ENV{IDF_PATH}/components/lwip/lwip/src/apps/mdns/mdns_domain.c
 )
+
+configure_file(version.h.in ${CMAKE_CURRENT_SOURCE_DIR}/version.h @ONLY)

@@ -2,6 +2,7 @@
 #include "mqtt_aliyun.h"
 #include "led.h"
 #include "wifi_manager.h"
+#include "tf_card.h"
 #include "version.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -13,8 +14,10 @@
 #include "freertos/semphr.h"
 #include "cJSON.h"
 #include "mbedtls/md.h"
+#include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <sys/stat.h>
 
 static const char *TAG = "OTA";
 
@@ -58,6 +61,8 @@ static bool          s_md5_ctx_ready = false;
 static mbedtls_md_context_t s_md5_ctx;
 static bool          s_initialized = false;
 static volatile bool s_ota_need_post_reboot_ok = false;
+static volatile bool s_ota_pending_verify = false;
+static int64_t       s_pending_verify_boot_ms = 0;
 
 static void set_state(ota_state_t st, const char *err)
 {
@@ -386,27 +391,6 @@ static ota_download_result_t do_http_download_once(const char *url, uint8_t *buf
     return OTA_DOWNLOAD_OK;
 }
 
-static bool parse_version_ints(const char *ver, int *major, int *minor, int *patch)
-{
-    if (!ver || ver[0] == '\0') return false;
-    int matched = sscanf(ver, "%d.%d.%d", major, minor, patch);
-    return matched >= 2;
-}
-
-static bool is_newer_version(const char *target_ver)
-{
-    if (!target_ver || target_ver[0] == '\0') return false;
-    if (strcmp(target_ver, APP_VERSION) == 0) return false;
-
-    int cur[3] = {0}, tgt[3] = {0};
-    if (!parse_version_ints(APP_VERSION, &cur[0], &cur[1], &cur[2])) return false;
-    if (!parse_version_ints(target_ver, &tgt[0], &tgt[1], &tgt[2])) return false;
-
-    if (tgt[0] != cur[0]) return tgt[0] > cur[0];
-    if (tgt[1] != cur[1]) return tgt[1] > cur[1];
-    return tgt[2] > cur[2];
-}
-
 static void ota_task(void *arg)
 {
     ota_notify_t *notify = (ota_notify_t *)arg;
@@ -590,6 +574,29 @@ static void ota_task(void *arg)
         goto cleanup;
     }
 
+    {
+        esp_app_desc_t new_desc;
+        esp_err_t desc_err = esp_ota_get_partition_description(target, &new_desc);
+        if (desc_err == ESP_OK) {
+            ESP_LOGI(TAG, "new fw bin version from header: '%s'", new_desc.version);
+            if (notify->fw_version[0] != '\0'
+             && strcmp(new_desc.version, notify->fw_version) != 0) {
+                char err_msg[128];
+                snprintf(err_msg, sizeof(err_msg),
+                    "fw version mismatch: header='%s' vs cloud='%s'",
+                    new_desc.version, notify->fw_version);
+                ESP_LOGE(TAG, "%s", err_msg);
+                set_state(OTA_STATE_FAILED, err_msg);
+                report_result("3", err_msg);
+                reply_upgrade(notify->msg_id, -1, err_msg);
+                goto cleanup;
+            }
+        } else {
+            ESP_LOGW(TAG, "esp_ota_get_partition_description failed: %s",
+                     esp_err_to_name(desc_err));
+        }
+    }
+
     err = esp_ota_set_boot_partition(target);
     if (err != ESP_OK) {
         char err_msg[128];
@@ -643,10 +650,6 @@ void ota_handle_mqtt_msg(const char *topic, int topic_len,
                          const char *data, int data_len)
 {
     if (!topic || !data) return;
-    if (s_ota_in_progress) {
-        ESP_LOGW(TAG, "OTA already in progress");
-        return;
-    }
 
     if (topic_len < 10) return;
 
@@ -658,42 +661,51 @@ void ota_handle_mqtt_msg(const char *topic, int topic_len,
     memcpy(data_buf, data, dlen);
     data_buf[dlen] = '\0';
 
-    ota_notify_t *notify = (ota_notify_t *)calloc(1, sizeof(ota_notify_t));
-    if (!notify) {
-        ESP_LOGE(TAG, "calloc failed");
-        return;
-    }
+    ota_notify_t notify = {0};
 
-    if (!parse_notify(data_buf, notify)) {
-        reply_upgrade(notify->msg_id, -1, "parse failed");
-        free(notify);
-        return;
-    }
-
-    if (!notify->force_upgrade && !is_newer_version(notify->fw_version)) {
-        ESP_LOGI(TAG, "Version not newer: current=%s target=%s", APP_VERSION, notify->fw_version);
-        reply_upgrade(notify->msg_id, 200, "not newer");
-        free(notify);
+    if (!parse_notify(data_buf, &notify)) {
+        reply_upgrade(notify.msg_id, -1, "parse failed");
         return;
     }
 
     if (!mqtt_is_connected()) {
-        reply_upgrade(notify->msg_id, -1, "mqtt not connected");
-        free(notify);
+        reply_upgrade(notify.msg_id, -1, "mqtt not connected");
         return;
     }
+
+    if (s_ota_in_progress) {
+        ESP_LOGW(TAG, "OTA already in progress, reply 200 to stop re-push");
+        reply_upgrade(notify.msg_id, 200, "busy");
+        return;
+    }
+
+    if (!notify.force_upgrade && notify.fw_version[0] != '\0') {
+        if (strcmp(notify.fw_version, APP_VERSION) == 0) {
+            ESP_LOGI(TAG, "fw_version same as current (%s), skip", APP_VERSION);
+            reply_upgrade(notify.msg_id, 200, "already latest");
+            report_result("0", APP_VERSION);
+            return;
+        }
+    }
+
+    reply_upgrade(notify.msg_id, 200, "accepted");
+    ESP_LOGI(TAG, "OTA accepted: %s -> %s (force=%d)", APP_VERSION, notify.fw_version, notify.force_upgrade);
+
+    ota_notify_t *notify_heap = (ota_notify_t *)calloc(1, sizeof(ota_notify_t));
+    if (!notify_heap) {
+        ESP_LOGE(TAG, "calloc failed");
+        return;
+    }
+    *notify_heap = notify;
 
     s_ota_in_progress = true;
     if (xTaskCreate(ota_task, "ota_task", OTA_TASK_STACK_SIZE,
-                    notify, OTA_TASK_PRIORITY, &s_ota_task_handle) != pdPASS) {
+                    notify_heap, OTA_TASK_PRIORITY, &s_ota_task_handle) != pdPASS) {
         ESP_LOGE(TAG, "xTaskCreate failed");
         s_ota_in_progress = false;
-        reply_upgrade(notify->msg_id, -1, "task create failed");
-        free(notify);
+        free(notify_heap);
         return;
     }
-
-    set_state(OTA_STATE_IDLE, NULL);
 }
 
 bool ota_is_in_progress(void)
@@ -738,6 +750,7 @@ void ota_init(void)
     }
 
     const esp_partition_t *running = esp_ota_get_running_partition();
+
     if (running) {
         esp_ota_img_states_t img_state;
         if (esp_ota_get_state_partition(running, &img_state) == ESP_OK) {
@@ -750,11 +763,11 @@ void ota_init(void)
                         old_ver = old_desc.version;
                     }
                 }
-                ESP_LOGI(TAG, "========== OTA UPGRADE OK ==========");
-                ESP_LOGI(TAG, "%s --> %s", old_ver, APP_VERSION);
-                ESP_LOGI(TAG, "=====================================");
-                esp_ota_mark_app_valid_cancel_rollback();
-                s_ota_need_post_reboot_ok = true;
+                ESP_LOGI(TAG, "========== OTA PENDING VERIFY ==========");
+                ESP_LOGI(TAG, "%s --> %s (defer mark valid, bootloader will rollback on crash)", old_ver, APP_VERSION);
+                ESP_LOGI(TAG, "=========================================");
+                s_ota_pending_verify = true;
+                s_pending_verify_boot_ms = esp_timer_get_time() / 1000;
             } else if (img_state == ESP_OTA_IMG_ABORTED) {
                 ESP_LOGW(TAG, "Previous OTA aborted, device may have rolled back");
             }
@@ -762,4 +775,370 @@ void ota_init(void)
     }
 
     ESP_LOGI(TAG, "OTA init, version: %s", APP_VERSION);
+}
+
+void ota_pending_verify_loop_check(void)
+{
+    if (!s_ota_pending_verify) return;
+    if (!mqtt_is_connected()) return;
+
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    int64_t elapsed_ms = now_ms - s_pending_verify_boot_ms;
+    if (elapsed_ms < OTA_VERIFY_MIN_RUNTIME_SEC * 1000) return;
+
+    ESP_LOGI(TAG, "OTA pending verify: MQTT connected + %lld sec elapsed, marking valid",
+             (long long)(elapsed_ms / 1000));
+    esp_ota_mark_app_valid_cancel_rollback();
+    s_ota_pending_verify = false;
+    s_ota_need_post_reboot_ok = true;
+    ota_maybe_post_reboot_ok();
+}
+
+#define TF_OTA_BIN_PATH             "/tf/firmware.bin"
+#define TF_OTA_BIN_MAGIC_FLASH_HDR  0xE9
+#define TF_OTA_SCAN_BUF_SIZE        4096
+
+static bool read_version_from_bin_file(const char *bin_path, char *out_version, size_t out_size)
+{
+    if (!bin_path || !out_version || out_size == 0) return false;
+
+    FILE *f = fopen(bin_path, "rb");
+    if (!f) {
+        ESP_LOGE(TAG, "TF OTA: cannot open %s", bin_path);
+        return false;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (fsize < 64) {
+        ESP_LOGE(TAG, "TF OTA: bin too small (%ld bytes)", fsize);
+        fclose(f);
+        return false;
+    }
+
+    uint8_t hdr[16];
+    if (fread(hdr, 1, 16, f) != 16 || hdr[0] != TF_OTA_BIN_MAGIC_FLASH_HDR) {
+        ESP_LOGE(TAG, "TF OTA: bad flash magic 0x%02X", hdr[0]);
+        fclose(f);
+        return false;
+    }
+    ESP_LOGI(TAG, "TF OTA: bin size=%ld, magic=0xE9 OK", fsize);
+
+    uint32_t target = ESP_APP_DESC_MAGIC_WORD;
+    uint8_t magic_bytes[4] = {
+        (uint8_t)(target & 0xFF),
+        (uint8_t)((target >> 8) & 0xFF),
+        (uint8_t)((target >> 16) & 0xFF),
+        (uint8_t)((target >> 24) & 0xFF),
+    };
+
+    uint8_t *buf = (uint8_t *)malloc(TF_OTA_SCAN_BUF_SIZE);
+    if (!buf) {
+        ESP_LOGE(TAG, "TF OTA: malloc scan buf fail");
+        fclose(f);
+        return false;
+    }
+
+    fseek(f, 16, SEEK_SET);
+
+    int match_state = 0;
+    long scanned = 16;
+
+    while (scanned < fsize) {
+        size_t chunk = fsize - scanned;
+        if (chunk > TF_OTA_SCAN_BUF_SIZE) chunk = TF_OTA_SCAN_BUF_SIZE;
+        size_t got = fread(buf, 1, chunk, f);
+        if (got == 0) break;
+
+        for (size_t i = 0; i < got; i++) {
+            if (buf[i] == magic_bytes[match_state]) {
+                match_state++;
+                if (match_state == 4) {
+                    long magic_abs = scanned + (long)i - 3;
+                    ESP_LOGI(TAG, "TF OTA: found magic at file offset %ld", magic_abs);
+
+                    fseek(f, magic_abs, SEEK_SET);
+                    esp_app_desc_t desc;
+                    if (fread(&desc, 1, sizeof(desc), f) != sizeof(desc)) {
+                        ESP_LOGE(TAG, "TF OTA: failed to read desc at %ld", magic_abs);
+                        free(buf);
+                        fclose(f);
+                        return false;
+                    }
+                    if (desc.magic_word != ESP_APP_DESC_MAGIC_WORD) {
+                        ESP_LOGW(TAG, "TF OTA: magic hit but bad desc.magic_word=0x%08" PRIx32, desc.magic_word);
+                        match_state = 0;
+                        fseek(f, scanned + (long)i - 2, SEEK_SET);
+                        scanned = scanned + (long)i - 2;
+                        break;
+                    }
+                    size_t ver_len = strnlen(desc.version, sizeof(desc.version));
+                    if (ver_len > 0 && ver_len < out_size) {
+                        ESP_LOGI(TAG, "TF OTA: bin version = %s", desc.version);
+                        strncpy(out_version, desc.version, out_size - 1);
+                        out_version[out_size - 1] = '\0';
+                        free(buf);
+                        fclose(f);
+                        return true;
+                    }
+                    ESP_LOGW(TAG, "TF OTA: desc version invalid");
+                    match_state = 0;
+                    fseek(f, magic_abs + 1, SEEK_SET);
+                    scanned = magic_abs + 1;
+                    break;
+                }
+            } else {
+                match_state = (buf[i] == magic_bytes[0]) ? 1 : 0;
+            }
+        }
+
+        scanned += (long)got;
+    }
+
+    ESP_LOGE(TAG, "TF OTA: esp_app_desc magic not found in file");
+    free(buf);
+    fclose(f);
+    return false;
+}
+
+static void tf_ota_task(void *arg)
+{
+    const char *bin_path = (const char *)arg;
+    esp_ota_handle_t ota_handle = 0;
+    uint8_t *buf = NULL;
+    FILE *f = NULL;
+    int64_t total_read = 0;
+    int64_t file_size = 0;
+    int last_reported_percent = -1;
+
+    struct stat st;
+    if (stat(bin_path, &st) != 0) {
+        set_state(OTA_STATE_FAILED, "stat bin failed");
+        ESP_LOGE(TAG, "TF OTA: stat failed");
+        goto cleanup;
+    }
+    file_size = st.st_size;
+    ESP_LOGI(TAG, "TF OTA: bin size = %" PRId64, file_size);
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) {
+        set_state(OTA_STATE_FAILED, "no running partition");
+        goto cleanup;
+    }
+    const esp_partition_t *target = esp_ota_get_next_update_partition(running);
+    if (!target) {
+        set_state(OTA_STATE_FAILED, "no target partition");
+        goto cleanup;
+    }
+
+    if ((uint64_t)file_size > target->size) {
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg),
+                 "bin too large: %" PRId64 " > partition 0x%" PRIx32,
+                 file_size, target->size);
+        set_state(OTA_STATE_FAILED, err_msg);
+        goto cleanup;
+    }
+
+    buf = (uint8_t *)malloc(OTA_BUFFER_SIZE);
+    if (!buf) {
+        set_state(OTA_STATE_FAILED, "malloc failed");
+        goto cleanup;
+    }
+
+    f = fopen(bin_path, "rb");
+    if (!f) {
+        set_state(OTA_STATE_FAILED, "re-open bin failed");
+        goto cleanup;
+    }
+
+    s_progress = 0;
+    s_error_reason[0] = '\0';
+    s_ota_in_progress = true;
+    s_cancel_requested = false;
+
+    ESP_LOGI(TAG, "TF OTA start: %s -> %s (size %" PRId64 ")",
+             APP_VERSION, s_target_version, file_size);
+
+    set_state(OTA_STATE_DOWNLOADING, NULL);
+    led_notify_ota_start();
+    report_progress(0);
+
+    esp_err_t err = esp_ota_begin(target, OTA_SIZE_UNKNOWN, &ota_handle);
+    if (err != ESP_OK) {
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg), "ota_begin: %s", esp_err_to_name(err));
+        set_state(OTA_STATE_FAILED, err_msg);
+        fclose(f);
+        goto cleanup;
+    }
+
+    while (1) {
+        if (s_cancel_requested) {
+            set_state(OTA_STATE_FAILED, "cancelled");
+            fclose(f);
+            goto cleanup;
+        }
+
+        int len = fread(buf, 1, OTA_BUFFER_SIZE, f);
+        if (len == 0) break;
+        if (len < 0) {
+            ESP_LOGE(TAG, "TF OTA: fread error");
+            set_state(OTA_STATE_FAILED, "fread error");
+            fclose(f);
+            goto cleanup;
+        }
+
+        err = esp_ota_write(ota_handle, buf, len);
+        if (err != ESP_OK) {
+            char err_msg[128];
+            snprintf(err_msg, sizeof(err_msg), "ota_write: %s", esp_err_to_name(err));
+            set_state(OTA_STATE_FAILED, err_msg);
+            fclose(f);
+            goto cleanup;
+        }
+
+        total_read += len;
+
+        if (file_size > 0) {
+            int percent = (int)((total_read * 100) / file_size);
+            int bucket = percent / OTA_PROGRESS_STEP;
+            if (bucket != last_reported_percent) {
+                last_reported_percent = bucket;
+                ESP_LOGI(TAG, "TF OTA progress: %d%%", bucket * OTA_PROGRESS_STEP);
+            }
+        }
+    }
+
+    fclose(f);
+    f = NULL;
+
+    if (total_read != file_size) {
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg),
+                 "incomplete read %" PRId64 "/%" PRId64, total_read, file_size);
+        set_state(OTA_STATE_FAILED, err_msg);
+        goto cleanup;
+    }
+
+    report_progress(100);
+    set_state(OTA_STATE_VERIFYING, NULL);
+
+    err = esp_ota_end(ota_handle);
+    ota_handle = 0;
+    if (err != ESP_OK) {
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg), "ota_end: %s", esp_err_to_name(err));
+        set_state(OTA_STATE_FAILED, err_msg);
+        goto cleanup;
+    }
+
+    err = esp_ota_set_boot_partition(target);
+    if (err != ESP_OK) {
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg), "set_boot: %s", esp_err_to_name(err));
+        set_state(OTA_STATE_FAILED, err_msg);
+        goto cleanup;
+    }
+
+    set_state(OTA_STATE_SWITCHING, NULL);
+
+    if (unlink(bin_path) == 0) {
+        ESP_LOGI(TAG, "TF OTA: bin deleted %s", bin_path);
+    } else {
+        ESP_LOGW(TAG, "TF OTA: failed to delete bin (ok): %s", bin_path);
+    }
+
+    set_state(OTA_STATE_REBOOT_WAIT, NULL);
+    led_notify_ota_success();
+    ESP_LOGI(TAG, "========== TF OTA UPGRADE SUCCESS ==========");
+    ESP_LOGI(TAG, "%s --> %s", APP_VERSION, s_target_version);
+    ESP_LOGI(TAG, "=============================================");
+    vTaskDelay(pdMS_TO_TICKS(OTA_REBOOT_DELAY_MS));
+    esp_restart();
+
+cleanup:
+    if (ota_handle) {
+        esp_ota_abort(ota_handle);
+        ota_handle = 0;
+    }
+    if (buf) {
+        free(buf);
+        buf = NULL;
+    }
+    if (f) {
+        fclose(f);
+    }
+    if (s_state == OTA_STATE_FAILED) {
+        led_notify_ota_fail();
+        ESP_LOGE(TAG, "TF OTA failed: %s", s_error_reason);
+    }
+    s_ota_in_progress = false;
+    s_cancel_requested = false;
+    if (s_ota_sem) {
+        xSemaphoreGive(s_ota_sem);
+    }
+    s_ota_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+void ota_check_tf_on_boot(void)
+{
+    ESP_LOGI(TAG, "=== TF OTA boot check ===");
+
+    // 等 TF 卡 mount，最多等 5 秒
+    for (int i = 0; i < 5; i++) {
+        if (tf_card_is_mounted()) break;
+        ESP_LOGI(TAG, "TF OTA: waiting for TF mount... (%d/5)", i + 1);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    if (!tf_card_is_mounted()) {
+        ESP_LOGI(TAG, "TF OTA: TF card not mounted after 5s, skip");
+        return;
+    }
+    ESP_LOGI(TAG, "TF OTA: TF mounted OK");
+
+    if (ota_is_in_progress()) {
+        ESP_LOGW(TAG, "TF OTA: OTA already in progress");
+        return;
+    }
+
+    struct stat st;
+    if (stat(TF_OTA_BIN_PATH, &st) != 0) {
+        ESP_LOGI(TAG, "TF OTA: no bin at %s", TF_OTA_BIN_PATH);
+        return;
+    }
+    if (st.st_size < 64) {
+        ESP_LOGW(TAG, "TF OTA: bin too small (%ld), skipping", (long)st.st_size);
+        unlink(TF_OTA_BIN_PATH);
+        return;
+    }
+
+    char bin_version[OTA_VERSION_MAX_LEN] = {0};
+    if (!read_version_from_bin_file(TF_OTA_BIN_PATH, bin_version, sizeof(bin_version))) {
+        ESP_LOGE(TAG, "TF OTA: failed to parse bin version");
+        unlink(TF_OTA_BIN_PATH);
+        return;
+    }
+
+    ESP_LOGI(TAG, "TF OTA: bin version [%s], starting upgrade...", bin_version);
+
+    s_target_version[0] = '\0';
+    strncpy(s_target_version, bin_version, sizeof(s_target_version) - 1);
+    s_target_version[sizeof(s_target_version) - 1] = '\0';
+    s_progress = 0;
+    s_error_reason[0] = '\0';
+    s_ota_in_progress = true;
+
+    static char bin_path_dup[64] = {0};
+    strncpy(bin_path_dup, TF_OTA_BIN_PATH, sizeof(bin_path_dup) - 1);
+    bin_path_dup[sizeof(bin_path_dup) - 1] = '\0';
+
+    if (xTaskCreate(tf_ota_task, "tf_ota_task", OTA_TASK_STACK_SIZE,
+                    bin_path_dup, OTA_TASK_PRIORITY, &s_ota_task_handle) != pdPASS) {
+        ESP_LOGE(TAG, "TF OTA: xTaskCreate failed");
+        s_ota_in_progress = false;
+    }
 }

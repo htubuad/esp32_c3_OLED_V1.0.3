@@ -31,6 +31,7 @@
 #define CMD_CLEAR_AND_AP 2
 #define CMD_CLOSE_AP     3
 #define CMD_OPEN_AP      4
+#define CMD_STOP         5
 
 #define CONNECTED_BIT  BIT0
 #define FAIL_BIT       BIT1
@@ -77,7 +78,7 @@ static esp_timer_handle_t s_ap_idle_timer = NULL;
 #define AP_IDLE_TIMEOUT_SEC 300
 #define AP_WAIT_MQTT_MAX_SEC    60
 #define AP_WAIT_MQTT_CHECK_SEC  5
-#define AP_CLOSE_DELAY_AFTER_MQTT_SEC  10
+#define AP_CLOSE_DELAY_AFTER_MQTT_SEC  60
 
 static bool s_ap_close_wait_mqtt = false;
 static int  s_ap_wait_mqtt_elapsed = 0;
@@ -346,7 +347,7 @@ static void retry_timer_cb(void *arg)
         return;
     }
 
-    ESP_LOGI(TAG, "后台定时器尝试重连: %s", cred.ssid);
+    ESP_LOGI(TAG, "Background timer retry connect: %s", cred.ssid);
     set_status("正在重连路由器...");
 
     s_sta_connect_allowed = true;
@@ -393,7 +394,7 @@ static void ap_auto_close_cb(void *arg)
     if (!s_ap_active) return;
 
     if (!s_wifi_connected) {
-        ESP_LOGI(TAG, "AP 自动关闭：STA 未连上，保持 AP 开启");
+        ESP_LOGI(TAG, "AP auto-close: STA not connected, keep AP open");
         s_ap_close_wait_mqtt = false;
         s_ap_wait_mqtt_elapsed = 0;
         return;
@@ -401,7 +402,7 @@ static void ap_auto_close_cb(void *arg)
 
     if (s_ap_close_wait_mqtt) {
         if (mqtt_is_connected()) {
-            ESP_LOGI(TAG, "MQTT 已连上，延迟 %ds 后关闭 AP 节能", AP_CLOSE_DELAY_AFTER_MQTT_SEC);
+            ESP_LOGI(TAG, "MQTT connected, delay %ds then close AP for power save", AP_CLOSE_DELAY_AFTER_MQTT_SEC);
             s_ap_close_wait_mqtt = false;
             s_ap_wait_mqtt_elapsed = 0;
             esp_timer_start_once(s_ap_auto_close_timer, AP_CLOSE_DELAY_AFTER_MQTT_SEC * 1000000);
@@ -410,18 +411,18 @@ static void ap_auto_close_cb(void *arg)
 
         s_ap_wait_mqtt_elapsed += AP_WAIT_MQTT_CHECK_SEC;
         if (s_ap_wait_mqtt_elapsed >= AP_WAIT_MQTT_MAX_SEC) {
-            ESP_LOGW(TAG, "等待 MQTT 超时 (%ds)，强制关闭 AP", AP_WAIT_MQTT_MAX_SEC);
+            ESP_LOGW(TAG, "MQTT wait timeout (%ds), force close AP", AP_WAIT_MQTT_MAX_SEC);
             s_ap_close_wait_mqtt = false;
             s_ap_wait_mqtt_elapsed = 0;
         } else {
-            ESP_LOGI(TAG, "等待 MQTT 连接... (%ds/%ds)",
+            ESP_LOGI(TAG, "Waiting MQTT connect... (%ds/%ds)",
                      s_ap_wait_mqtt_elapsed, AP_WAIT_MQTT_MAX_SEC);
             esp_timer_start_once(s_ap_auto_close_timer, AP_WAIT_MQTT_CHECK_SEC * 1000000);
             return;
         }
     }
 
-    ESP_LOGI(TAG, "自动关闭 AP 节能");
+    ESP_LOGI(TAG, "Auto close AP for power save");
     do_close_ap();
     if (s_state == WIFI_STATE_STA_CONNECTED) {
         s_state = WIFI_STATE_STA_ONLY;
@@ -459,7 +460,7 @@ static void ap_idle_timeout_cb(void *arg)
     }
 
     if (s_ap_active) {
-        ESP_LOGW(TAG, "AP 配网模式 %ds 未配置，关闭配网节能（重启恢复）", AP_IDLE_TIMEOUT_SEC);
+        ESP_LOGW(TAG, "AP config mode timeout %ds, close AP for power save (reset to recover)", AP_IDLE_TIMEOUT_SEC);
         set_status("配网超时，重启恢复");
         do_close_ap();
         s_state = WIFI_STATE_IDLE;
@@ -762,6 +763,8 @@ static void fsm_task(void *arg)
         s_state = WIFI_STATE_STA_CONNECT;
         do_wifi_start_once(cred.ssid, cred.password);
 
+        s_ap_close_wait_mqtt = true;
+        s_ap_wait_mqtt_elapsed = 0;
         start_ap_auto_close_timer();
 
         EventBits_t bits = xEventGroupWaitBits(s_event_group,
@@ -824,7 +827,7 @@ static void fsm_task(void *arg)
                         do_open_ap();
                         wifi_cred_t cred2;
                         if (wifi_cred_load(&cred2) && strlen(cred2.ssid) > 0) {
-                            ESP_LOGI(TAG, "CMD_OPEN_AP: 恢复 STA 重连 %s", cred2.ssid);
+                            ESP_LOGI(TAG, "CMD_OPEN_AP: resume STA reconnect %s", cred2.ssid);
                             s_sta_connect_allowed = true;
                             s_sta_ever_connected = true;
                             s_retry_count = 0;
@@ -843,6 +846,34 @@ static void fsm_task(void *arg)
 
                 default:
                     break;
+
+                case CMD_STOP:
+                    ESP_LOGW(TAG, "CMD_STOP: stopping WiFi manager");
+                    dns_server_stop();
+                    stop_rssi_timer();
+                    stop_retry_timer();
+                    stop_ap_auto_close_timer();
+                    stop_ap_idle_timer();
+                    mdns_unregister_sta();
+                    mdns_unregister_ap();
+                    if (s_wifi_connected) {
+                        esp_wifi_disconnect();
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                    }
+                    esp_wifi_stop();
+                    s_wifi_started = false;
+                    s_state = WIFI_STATE_IDLE;
+                    s_wifi_connected = false;
+                    s_ap_active = false;
+                    s_sta_connect_allowed = false;
+                    s_sta_ever_connected = false;
+                    s_retry_count = 0;
+                    s_ap_close_wait_mqtt = false;
+                    s_ap_wait_mqtt_elapsed = 0;
+                    xQueueReset(s_cmd_queue);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    vTaskDelete(NULL);
+                    return;
             }
         } else {
             EventBits_t bits = xEventGroupGetBits(s_event_group);
@@ -852,7 +883,7 @@ static void fsm_task(void *arg)
                     s_state = WIFI_STATE_AP;
                     do_runtime_standalone_ap();
                 } else if (s_state == WIFI_STATE_STA_ONLY) {
-                    ESP_LOGW(TAG, "首次连接失败 in STA_ONLY，启动后台重试");
+                    ESP_LOGW(TAG, "First connect failed in STA_ONLY, start background retry");
                     start_retry_timer();
                 }
                 xEventGroupClearBits(s_event_group, FAIL_BIT);
@@ -863,10 +894,47 @@ static void fsm_task(void *arg)
 
 void wifi_manager_start(void)
 {
-    if (s_cmd_queue) return;
-    s_cmd_queue = xQueueCreate(WIFI_QUEUE_LEN, sizeof(wifi_msg_t));
-    xTaskCreatePinnedToCore(fsm_task, "wifi_fsm", WIFI_TASK_STACK_SIZE,
+    if (!s_cmd_queue) {
+        s_cmd_queue = xQueueCreate(WIFI_QUEUE_LEN, sizeof(wifi_msg_t));
+    }
+    BaseType_t ret = xTaskCreatePinnedToCore(fsm_task, "wifi_fsm", WIFI_TASK_STACK_SIZE,
                             NULL, WIFI_TASK_PRIORITY, NULL, 0);
+    if (ret != pdPASS) {
+        ESP_LOGE("WIFI", "Failed to create wifi_fsm task");
+    }
+}
+
+void wifi_manager_stop(void)
+{
+    ESP_LOGW(TAG, "wifi_manager_stop()");
+    if (s_cmd_queue) {
+        queue_cmd(CMD_STOP, NULL);
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
+}
+
+void wifi_manager_emergency_stop(void)
+{
+    ESP_LOGW(TAG, "wifi_manager_emergency_stop() - direct sync stop");
+
+    if (s_cmd_queue) {
+        xQueueReset(s_cmd_queue);
+    }
+
+    dns_server_stop();
+
+    if (s_wifi_connected) {
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    esp_wifi_stop();
+    s_wifi_started = false;
+    s_wifi_connected = false;
+    s_ap_active = false;
+    s_state = WIFI_STATE_IDLE;
+
+    ESP_LOGI(TAG, "WiFi RF stopped");
 }
 
 void wifi_manager_request_connect(const char *ssid, const char *password)

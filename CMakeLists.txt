@@ -3,7 +3,12 @@ cmake_minimum_required(VERSION 3.16)
 set(EXTRA_COMPONENT_DIRS "")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(ESP32_C3_OLED)
+project(ESP32_C3_OLED VERSION 1.7.1)
+
+message(STATUS "========== ESP32-C3 OLED ==========")
+message(STATUS "  Project version : ${PROJECT_VERSION}")
+message(STATUS "  bin header ver  : ${PROJECT_VERSION}  (written by CMake, single source)")
+message(STATUS "====================================")
 
 add_custom_target(bump-version
     COMMAND ${PYTHON} ${CMAKE_SOURCE_DIR}/main/version_bump.py patch

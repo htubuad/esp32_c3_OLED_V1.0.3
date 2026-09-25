@@ -20,6 +20,8 @@ typedef struct {
     char        error[128];
 } ota_status_t;
 
+#define OTA_VERIFY_MIN_RUNTIME_SEC   30
+
 void ota_init(void);
 bool ota_is_in_progress(void);
 void ota_handle_mqtt_msg(const char *topic, int topic_len,
@@ -27,5 +29,7 @@ void ota_handle_mqtt_msg(const char *topic, int topic_len,
 void ota_get_status(ota_status_t *out);
 void ota_abort(void);
 void ota_maybe_post_reboot_ok(void);
+void ota_check_tf_on_boot(void);
+void ota_pending_verify_loop_check(void);
 
 #endif

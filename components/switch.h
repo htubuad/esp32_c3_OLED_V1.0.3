@@ -2,24 +2,27 @@
 #define SWITCH_H
 
 #include <stdbool.h>
+#include "esp_err.h"
 
-#define SWITCH0_GPIO        5
-#define SWITCH1_GPIO        12
-#define SWITCH2_GPIO        8
-#define POWER_GPIO          4
+#define POWER_GPIO          13
 
-void switch_init(void);
+#define SWITCH1_GPIO        19
+#define SWITCH2_GPIO        1
 
-void sw0_set(bool on);
-bool sw0_get(void);
+#define LIGHT_GPIO          18
 
-void sw_bit1_set(bool on);
-bool sw_bit1_get(void);
+esp_err_t switch_init(void);
+
+void power_set(bool on);
+bool power_get(void);
 
 void switch1_set(bool on);
 bool switch1_get(void);
 
-void power_set(bool on);
-bool power_get(void);
+void switch2_set(bool on);
+bool switch2_get(void);
+
+void light_set(bool on);
+bool light_get(void);
 
 #endif

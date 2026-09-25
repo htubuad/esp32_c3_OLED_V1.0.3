@@ -4,6 +4,7 @@
 #include "temp_sensor.h"
 #include "mqtt_aliyun.h"
 #include "version.h"
+#include "tf_card.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
@@ -19,8 +20,6 @@ static const char *TAG = "HTTP";
 static int64_t s_start_time_ms = 0;
 static httpd_handle_t s_server = NULL;
 
-#define HTML_BUF_SIZE  12288
-
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     char uptime_str[12];
@@ -32,16 +31,12 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
     const char *device_status = " 已连接";
     const char *device_state_class = "ok";
-    const char *device_state_text = "在线";
-
     if (wifi_is_ap_active()) {
         device_status = "WiFi 配网模式";
         device_state_class = "warn";
-        device_state_text = "配网中";
     } else if (!wifi_is_connected()) {
         device_status = "ESP32-C3 离线";
         device_state_class = "bad";
-        device_state_text = "已断开";
     }
 
     const char *ap_state_text = wifi_is_ap_active() ? "已开启" : "未开启";
@@ -54,18 +49,26 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
     const char *mqtt_text = mqtt_is_connected() ? "正常" : "未连接";
     const char *mqtt_cls = mqtt_is_connected() ? "ok" : "warn";
-    const char *led_text = switch1_get() ? "开" : "关";
-    const char *led_cls = switch1_get() ? "ok" : "bad";
+
+    const char *tf_state_text = tf_card_is_mounted() ? "已挂载" : "未挂载";
+    const char *tf_state_cls  = tf_card_is_mounted() ? "ok" : "bad";
+    char tf_space_str[64] = "无";
+    if (tf_card_is_mounted()) {
+        uint64_t total = 0, free = 0;
+        if (tf_card_get_space(&total, &free)) {
+            double total_mb = total / (1024.0 * 1024.0);
+            double free_mb  = free  / (1024.0 * 1024.0);
+            snprintf(tf_space_str, sizeof(tf_space_str),
+                     "%.1f MB / %.1f MB", free_mb, total_mb);
+        }
+    }
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");
     httpd_resp_set_hdr(req, "Expires", "0");
 
-    char *chunk = (char *)malloc(HTML_BUF_SIZE);
-    if (!chunk) return ESP_ERR_NO_MEM;
-
-    int n = snprintf(chunk, HTML_BUF_SIZE,
+    httpd_resp_send_chunk(req,
         "<!DOCTYPE html><html lang='zh-CN'>"
         "<head><meta charset='UTF-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -96,33 +99,54 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         ".message.success{background:#e8f5e9;color:#2e7d32;display:block}"
         ".message.error{background:#ffebee;color:#c62828;display:block}"
         "</style></head><body>"
-
         "<div class='card'>"
-        "<h1>物联网控制台</h1>"
-        "<div class='sub'>%s</div>"
+        "<h1>物联网控制台</h1>",
+        HTTPD_RESP_USE_STRLEN);
 
-        "<div class='tabs'>"
-        "<button class='tab-btn active' onclick='switchTab(this,\"status\")'>状态</button>"
-        "<button class='tab-btn' onclick='switchTab(this,\"wifi\")'>WiFi设置</button>"
-        "<button class='tab-btn' onclick='switchTab(this,\"mqtt\")'>MQTT数据</button>"
-        "</div>"
+    {
+        char vb[2048];
+        int n = snprintf(vb, sizeof(vb),
+            "<div class='sub'>%s</div>"
+            "<div class='tabs'>"
+            "<button class='tab-btn active' onclick='switchTab(this,\"status\")'>状态</button>"
+            "<button class='tab-btn' onclick='switchTab(this,\"wifi\")'>WiFi设置</button>"
+            "</div>"
+            "<div id='tab-status' class='tab active'>"
+            "<div class='row'><span class='label'>AP 热点</span><span class='val %s'>%s</span></div>"
+            "<div class='row'><span class='label'>AP IP</span><span class='val'>%s</span></div>"
+            "<div class='row'><span class='label'>STA 客户端</span><span class='val %s'>%s</span></div>"
+            "<div class='row'><span class='label'>STA IP</span><span class='val'>%s</span></div>"
+            "<div class='row'><span class='label'>RSSI</span><span class='val' id='val-rssi'>%d dBm</span></div>"
+            "<div class='row'><span class='label'>温度</span><span class='val' id='val-temp2'>%.1f C</span></div>"
+            "<div class='row'><span class='label'>MQTT</span><span class='val %s' id='val-mqtt'>%s</span></div>"
+            "<div class='row'><span class='label'>存储卡</span><span class='val %s' id='val-tf'>%s</span></div>"
+            "<div class='row'><span class='label'>剩余容量</span><span class='val' id='val-tf-space'>%s</span></div>"
+            "<div class='row'><span class='label'>运行时间</span><span class='val'>%s</span></div>"
+            "<div class='row'><span class='label'>内存</span><span class='val'>%lu KB</span></div>"
+            "<div class='row'><span class='label'>版本</span><span class='val'>%s</span></div>"
+            "<div style='margin-top:20px'>"
+            "<a class='btn btn-reboot' href='/reboot'>重启</a>"
+            "</div></div>",
 
-        "<div id='tab-status' class='tab active'>"
-        "<div class='row'><span class='label'>AP 热点</span><span class='val %s'>%s</span></div>"
-        "<div class='row'><span class='label'>AP IP</span><span class='val'>%s</span></div>"
-        "<div class='row'><span class='label'>STA 客户端</span><span class='val %s'>%s</span></div>"
-        "<div class='row'><span class='label'>STA IP</span><span class='val'>%s</span></div>"
-        "<div class='row'><span class='label'>RSSI</span><span class='val'>%d dBm</span></div>"
-        "<div class='row'><span class='label'>温度</span><span class='val'>%.1f C</span></div>"
-        "<div class='row'><span class='label'>MQTT</span><span class='val %s'>%s</span></div>"
-        "<div class='row'><span class='label'>运行时间</span><span class='val'>%s</span></div>"
-        "<div class='row'><span class='label'>内存</span><span class='val'>%lu KB</span></div>"
-        "<div class='row'><span class='label'>版本</span><span class='val'>%s</span></div>"
-        "<div style='margin-top:20px'>"
-        "<a class='btn btn-reboot' href='/reboot'>重启</a>"
-        "</div>"
-        "</div>"
+            device_status,
+            ap_state_cls, ap_state_text,
+            ap_ip,
+            sta_state_cls, sta_state_text,
+            sta_ip,
+            wifi_is_connected() ? wifi_get_rssi() : 0,
+            temp_sensor_get(),
+            mqtt_cls, mqtt_text,
+            tf_state_cls, tf_state_text,
+            tf_space_str,
+            uptime_str,
+            (unsigned long)(free_heap / 1024),
+            APP_VERSION
+        );
+        if (n > (int)sizeof(vb) - 1) n = sizeof(vb) - 1;
+        httpd_resp_send_chunk(req, vb, n);
+    }
 
+    httpd_resp_send_chunk(req,
         "<div id='tab-wifi' class='tab'>"
         "<div style='margin-bottom:16px'>"
         "<button class='btn scan-btn' onclick='scanWifi()'>扫描</button>"
@@ -139,31 +163,10 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<div style='margin-top:18px;padding:12px 14px;background:#f5f7fa;border-radius:8px;border-left:3px solid #1a73e8'>"
         "<div style='color:#666;font-size:13px;margin-bottom:4px'>当前网络状态</div>"
         "<div id='wifi-status-text' style='color:#1a73e8;font-weight:600;font-size:14px'>加载中...</div>"
-        "</div>"
-        "</div>"
+        "</div></div>",
+        HTTPD_RESP_USE_STRLEN);
 
-        "<div id='tab-mqtt' class='tab'>"
-        "<div class='row'><span class='label'>温度</span><span class='val' id='val-temp'>--</span></div>"
-        "<div class='row'><span class='label'>LED</span><span class='val' id='val-led'>--</span></div>"
-        "<div class='row'><span class='label'>Field1</span><span class='val' id='val-field1'>--</span></div>"
-        "<div class='row'><span class='label'>Field1_data</span><span class='val' id='val-field1-data'>--</span></div>"
-        "<div class='row'><span class='label'>Field2</span><span class='val' id='val-field2'>--</span></div>"
-        "<div class='row'><span class='label'>Field2_data</span><span class='val' id='val-field2-data'>--</span></div>"
-        "<div class='row'><span class='label'>Set1</span><span class='val' id='val-set1'>--</span></div>"
-        "<div class='row'><span class='label'>Set2</span><span class='val' id='val-set2'>--</span></div>"
-
-        "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>最新接收数据</h3>"
-        "<div id='msg-lines-box' style='background:#1e1e2e;color:#cdd6f4;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:13px;min-height:60px;max-height:200px;overflow-y:auto;word-break:break-all;white-space:pre-wrap'>暂无数据</div>"
-
-        "<h3 style='margin:16px 0 8px;color:#1a73e8;font-size:15px'>发送 (标准报文)</h3>"
-        "<textarea id='mqtt-send-data' rows='4' placeholder='JSON报文' style='width:100%%;box-sizing:border-box;font-family:monospace;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:4px;resize:vertical'>{\"DeviceID\":\"26001_" APP_VERSION "\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field1_data\":0,\"Field2\":0.0,\"Field2_data\":0.0}</textarea>"
-        "<div style='margin-top:12px'>"
-        "<button class='btn btn-on' onclick='mqttSend()'>发送到阿里云</button>"
-        "<button class='btn' style='background:#888' onclick='resetSendData()'>恢复默认</button>"
-        "</div>"
-        "<div id='mqtt-send-msg' class='message'></div>"
-        "</div>"
-
+    httpd_resp_send_chunk(req,
         "<script>"
         "var t=null;var _lastSig='';var _curTab='status';"
         "function switchTab(btn,name){"
@@ -173,28 +176,26 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "if(btn)btn.classList.add('active');"
         "_curTab=name;"
         "location.hash=name;"
-        "if(name==='mqtt'||name==='wifi'){startRefresh();}else{stopRefresh();}"
+        "startRefresh();"
         "}"
         "function startRefresh(){if(t)return;t=setInterval(refresh,1000);refresh();}"
         "function stopRefresh(){if(t){clearInterval(t);t=null;}}"
         "function refresh(){"
-        "if(_curTab==='mqtt'){fetch('/api/mqtt/data',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var tt=document.getElementById('val-temp');var l=document.getElementById('val-led');if(tt)tt.textContent=j.temp!=null?j.temp.toFixed(1)+' C':'--';if(l){l.textContent=j.led?'开':'关';l.className='val '+(j.led?'ok':'bad');}var el;el=document.getElementById('val-field1');if(el)el.textContent=j.field_a!=null?j.field_a.toFixed(2):'--';el=document.getElementById('val-field1-data');if(el)el.textContent=j.field1_data!=null?j.field1_data:'--';el=document.getElementById('val-field2');if(el)el.textContent=j.field_b!=null?j.field_b.toFixed(2):'--';el=document.getElementById('val-field2-data');if(el)el.textContent=j.field2_data!=null?j.field2_data:'--';el=document.getElementById('val-set1');if(el)el.textContent=j.set_a!=null?j.set_a.toFixed(2):'--';el=document.getElementById('val-set2');if(el)el.textContent=j.set_b!=null?j.set_b.toFixed(2):'--';var box=document.getElementById('msg-lines-box');if(box){var h=j.history||[];var html='';if(!h.length){html='暂无数据';}else{var e=h[0];var tp=(e.topic||'').split('/');var nm=tp[tp.length-1]||'topic';html+='<div style=\"background:#313244;border-radius:4px;padding:6px 8px;margin-bottom:6px\"><div style=\"color:#89b4fa;font-weight:700;font-size:14px\">'+nm+'</div><div style=\"color:#f9e2af;word-break:break-all\">'+(e.data||'')+'</div></div>';for(var i=1;i<h.length;i++){var x=h[i];var tp2=(x.topic||'').split('/');var n2=tp2[tp2.length-1]||'topic';html+='<div style=\"padding:2px 0;color:#6c7086;font-size:12px;border-bottom:1px dashed #45475a\"><span>'+n2+'</span> <span style=\"color:#a6adc8\">'+(x.data||'')+'</span></div>';}}var curSig=h.length?(h[0].topic||'')+'|'+(h[0].data||''):'';if(curSig!==_lastSig){box.innerHTML=html;box.scrollTop=0;}_lastSig=curSig;}}).catch(function(){});}"
+        "if(_curTab==='status'){fetch('/status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){"
+        "var el;"
+        "el=document.getElementById('val-rssi');if(el)el.textContent=(j.rssi!=null?j.rssi:'--')+' dBm';"
+        "el=document.getElementById('val-temp2');if(el)el.textContent=(j.temp!=null?j.temp.toFixed(1):'--')+' C';"
+        "el=document.getElementById('val-mqtt');if(el){el.textContent=j.mqtt_connected?'正常':'未连接';el.className='val '+(j.mqtt_connected?'ok':'warn');}"
+        "el=document.getElementById('val-tf');if(el){el.textContent=j.tf_mounted?'已挂载':'未挂载';el.className='val '+(j.tf_mounted?'ok':'bad');}"
+        "el=document.getElementById('val-tf-space');if(el){"
+        "if(j.tf_mounted&&j.tf_free_bytes!=null&&j.tf_total_bytes!=null){"
+        "var fm=j.tf_free_bytes/(1024*1024);var tm=j.tf_total_bytes/(1024*1024);el.textContent=fm.toFixed(1)+' MB / '+tm.toFixed(1)+' MB';"
+        "}else{el.textContent='无';}"
+        "}"
+        "}).catch(function(){});}"
         "else if(_curTab==='wifi'){fetch('/status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){var el=document.getElementById('wifi-status-text');if(el){el.textContent=j.wifi_status||'--';}}).catch(function(){});}"
         "}"
         "(function(){var h=location.hash.replace('#','');if(h){var b=document.querySelector('.tab-btn[onclick*=\"'+h+'\"]');switchTab(b,h);}})();"
-        "function resetSendData(){document.getElementById('mqtt-send-data').value='{\"DeviceID\":\"26001_" APP_VERSION "\",\"Dir\":\"D>C\",\"Temp\":25.0,\"RSSI\":-65,\"Switches\":1,\"power\":0,\"Field1\":0.00,\"Field1_data\":0,\"Field2\":0.0,\"Field2_data\":0.0}';}"
-        "async function mqttSend(){"
-        "var d=document.getElementById('mqtt-send-data').value.trim();"
-        "var m=document.getElementById('mqtt-send-msg');"
-        "if(!d){m.className='message error';m.textContent='请输入数据';return;}"
-        "m.className='message';m.textContent='发送中...';m.style.display='block';"
-        "try{"
-        "var r=await fetch('/api/mqtt/send',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(d)});"
-        "var j=await r.json();"
-        "if(j.success){m.className='message success';m.textContent='发送成功';}"
-        "else{m.className='message error';m.textContent='失败: '+j.error;}"
-        "}catch(e){m.className='message error';m.textContent='网络错误';}"
-        "}"
         "async function scanWifi(){"
         "var l=document.getElementById('wifi-scan-result');"
         "l.innerHTML='<div class=\"loading\">扫描中...</div>';"
@@ -226,25 +227,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "</script>"
         "<div style='text-align:center;color:#aaa;font-size:12px;margin-top:16px'>" APP_VERSION "</div>"
         "</div></body></html>",
+        HTTPD_RESP_USE_STRLEN);
 
-        device_status,
-        ap_state_cls, ap_state_text,
-        ap_ip,
-        sta_state_cls, sta_state_text,
-        sta_ip,
-        wifi_is_connected() ? wifi_get_rssi() : 0,
-        temp_sensor_get(),
-        mqtt_cls, mqtt_text,
-        uptime_str,
-        (unsigned long)(free_heap / 1024),
-        APP_VERSION
-    );
-
-    if (n < 0) { free(chunk); return ESP_FAIL; }
-    if (n >= HTML_BUF_SIZE) n = HTML_BUF_SIZE - 1;
-
-    httpd_resp_send(req, chunk, n);
-    free(chunk);
+    httpd_resp_send_chunk(req, "", 0);
     return ESP_OK;
 }
 
@@ -255,10 +240,19 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "ip", wifi_get_ip());
     cJSON_AddBoolToObject(root, "mqtt_connected", mqtt_is_connected());
     cJSON_AddNumberToObject(root, "temp", temp_sensor_get());
-    cJSON_AddBoolToObject(root, "led", switch1_get());
+    cJSON_AddBoolToObject(root, "led", light_get());
     cJSON_AddNumberToObject(root, "rssi", wifi_get_rssi());
     cJSON_AddNumberToObject(root, "free_heap", heap_caps_get_free_size(MALLOC_CAP_8BIT));
     cJSON_AddStringToObject(root, "wifi_status", wifi_get_status_text());
+
+    cJSON_AddBoolToObject(root, "tf_mounted", tf_card_is_mounted());
+    if (tf_card_is_mounted()) {
+        uint64_t total = 0, free = 0;
+        if (tf_card_get_space(&total, &free)) {
+            cJSON_AddNumberToObject(root, "tf_total_bytes", (double)total);
+            cJSON_AddNumberToObject(root, "tf_free_bytes", (double)free);
+        }
+    }
 
     char *out = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
@@ -278,11 +272,11 @@ static esp_err_t led_post_handler(httpd_req_t *req)
     else if (strstr(buf, "action=off")) on = false;
     else return ESP_OK;
 
-    switch1_set(on);
+    light_set(on);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "success", true);
-    cJSON_AddBoolToObject(root, "led", switch1_get());
+    cJSON_AddBoolToObject(root, "led", light_get());
 
     char *out = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
@@ -377,39 +371,6 @@ static esp_err_t wifi_clear_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t mqtt_data_handler(httpd_req_t *req)
-{
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "temp", temp_sensor_get());
-    cJSON_AddBoolToObject(root, "led", switch1_get());
-    cJSON_AddStringToObject(root, "last_topic", mqtt_get_last_rx_topic());
-    cJSON_AddStringToObject(root, "last_data", mqtt_get_last_rx_data());
-    cJSON_AddNumberToObject(root, "field_a", mqtt_get_field_a());
-    cJSON_AddNumberToObject(root, "field_b", mqtt_get_field_b());
-    cJSON_AddNumberToObject(root, "set_a",   mqtt_get_set_a());
-    cJSON_AddNumberToObject(root, "set_b",   mqtt_get_set_b());
-    cJSON_AddNumberToObject(root, "field1_data", mqtt_get_field1_data());
-    cJSON_AddNumberToObject(root, "field2_data", mqtt_get_field2_data());
-
-    mqtt_rx_entry_t history[5];
-    int hcnt = mqtt_get_rx_entries(history, 5);
-    cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < hcnt; i++) {
-        cJSON *item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "topic", history[i].topic);
-        cJSON_AddStringToObject(item, "data", history[i].data);
-        cJSON_AddItemToArray(arr, item);
-    }
-    cJSON_AddItemToObject(root, "history", arr);
-
-    char *out = cJSON_PrintUnformatted(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, out, -1);
-    free(out);
-    cJSON_Delete(root);
-    return ESP_OK;
-}
-
 static const char *s_portal_html =
     "<!DOCTYPE html><html><head><meta charset='utf-8'>"
     "<meta http-equiv='refresh' content='0;url=/#wifi'>"
@@ -464,69 +425,55 @@ static esp_err_t err_404_handler(httpd_req_t *req, httpd_err_code_t error)
     return ESP_OK;
 }
 
-static void url_decode(char *s)
-{
-    char *r = s;
-    while (*s) {
-        if (*s == '%' && s[1] && s[2]) {
-            char hex[3] = {s[1], s[2], 0};
-            *r++ = (char)strtol(hex, NULL, 16);
-            s += 3;
-        } else if (*s == '+') {
-            *r++ = ' ';
-            s++;
-        } else {
-            *r++ = *s++;
-        }
-    }
-    *r = 0;
-}
-
-static esp_err_t mqtt_send_handler(httpd_req_t *req)
-{
-    char buf[512];
-    int n = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (n <= 0) return ESP_FAIL;
-    buf[n] = '\0';
-
-    char *data = NULL;
-    if (strncmp(buf, "data=", 5) == 0) data = buf + 5;
-    else data = buf;
-
-    if (data) url_decode(data);
-
-    esp_err_t err = mqtt_publish_aliyun_params(data);
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "success", err == ESP_OK);
-    if (err != ESP_OK) cJSON_AddStringToObject(root, "error", "send failed");
-
-    char *out = cJSON_PrintUnformatted(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, out, -1);
-    free(out);
-    cJSON_Delete(root);
-    return ESP_OK;
-}
-
 void start_webserver(int64_t start_time_ms)
 {
+    if (s_server != NULL) {
+        ESP_LOGI(TAG, "webserver already running, skip start");
+        return;
+    }
+
     s_start_time_ms = start_time_ms;
+
+    ESP_LOGI(TAG, "=== start_webserver ===");
+    ESP_LOGI(TAG, "heap before httpd_start: free=%lu internal=%lu largest=%lu",
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 8192;
+    config.backlog_conn = 2;
     config.max_uri_handlers = 16;
-    config.max_open_sockets = 5;
+    config.max_open_sockets = 4;
     config.keep_alive_enable = true;
     config.keep_alive_idle = 3;
     config.send_wait_timeout = 3000;
     config.recv_wait_timeout = 3000;
     config.task_priority = 6;
+    config.ctrl_port = 32768;
 
-    if (httpd_start(&s_server, &config) != ESP_OK) {
-        // ESP_LOGI(TAG, "Failed to start webserver");
-        return;
+    esp_err_t err = httpd_start(&s_server, &config);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "httpd_start failed (%s), retrying...", esp_err_to_name(err));
+        int retry_delays_ms[] = {200, 500, 1000, 2000};
+        for (int i = 0; i < 4; i++) {
+            vTaskDelay(pdMS_TO_TICKS(retry_delays_ms[i]));
+            err = httpd_start(&s_server, &config);
+            if (err == ESP_OK) break;
+            ESP_LOGW(TAG, "httpd_start retry %d/4 failed (%s)", i + 1, esp_err_to_name(err));
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "httpd_start all retries failed (%s)", esp_err_to_name(err));
+            ESP_LOGI(TAG, "heap final: free=%lu largest=%lu",
+                     (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+            return;
+        }
+        ESP_LOGI(TAG, "httpd_start succeeded after retry");
     }
+
+    ESP_LOGI(TAG, "Web server started OK, heap now free=%lu",
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
     httpd_uri_t uri_root = {.uri = "/", .method = HTTP_GET, .handler = root_get_handler};
     httpd_uri_t uri_status = {.uri = "/status", .method = HTTP_GET, .handler = status_get_handler};
@@ -536,9 +483,6 @@ void start_webserver(int64_t start_time_ms)
     httpd_uri_t uri_wifi_scan = {.uri = "/api/wifi/scan", .method = HTTP_GET, .handler = wifi_scan_handler};
     httpd_uri_t uri_wifi_cfg = {.uri = "/api/wifi/configure", .method = HTTP_POST, .handler = wifi_configure_handler};
     httpd_uri_t uri_wifi_clr = {.uri = "/api/wifi/clear", .method = HTTP_POST, .handler = wifi_clear_handler};
-
-    httpd_uri_t uri_mqtt_data = {.uri = "/api/mqtt/data", .method = HTTP_GET, .handler = mqtt_data_handler};
-    httpd_uri_t uri_mqtt_send = {.uri = "/api/mqtt/send", .method = HTTP_POST, .handler = mqtt_send_handler};
 
     httpd_uri_t uri_gen204 = {.uri = "/generate_204", .method = HTTP_GET, .handler = handler_generate_204};
     httpd_uri_t uri_ncsi_txt = {.uri = "/ncsi.txt", .method = HTTP_GET, .handler = handler_ncsi};
@@ -554,8 +498,6 @@ void start_webserver(int64_t start_time_ms)
     httpd_register_uri_handler(s_server, &uri_wifi_scan);
     httpd_register_uri_handler(s_server, &uri_wifi_cfg);
     httpd_register_uri_handler(s_server, &uri_wifi_clr);
-    httpd_register_uri_handler(s_server, &uri_mqtt_data);
-    httpd_register_uri_handler(s_server, &uri_mqtt_send);
     httpd_register_uri_handler(s_server, &uri_gen204);
     httpd_register_uri_handler(s_server, &uri_ncsi_txt);
     httpd_register_uri_handler(s_server, &uri_connecttest);

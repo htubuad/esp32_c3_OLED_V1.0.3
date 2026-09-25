@@ -2,8 +2,9 @@
 #define LED_H
 
 #include <stdbool.h>
+#include "esp_err.h"
 
-#define LED_STATUS_GPIO     13
+#define LED_STATUS_GPIO     12
 
 typedef enum {
     LED_MODE_OFF = 0,
@@ -14,9 +15,10 @@ typedef enum {
     LED_MODE_BLINK_DOUBLE,
     LED_MODE_BLINK_GOOD,
     LED_MODE_BLINK_BAD,
+    LED_MODE_BLINK_UNDERVOLT,
 } led_mode_t;
 
-void led_init(void);
+esp_err_t led_init(void);
 
 void led_status_mode_set(led_mode_t mode);
 

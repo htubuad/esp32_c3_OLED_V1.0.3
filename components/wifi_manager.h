@@ -45,6 +45,8 @@ int wifi_get_rssi(void);
 const char *wifi_get_status_text(void);
 
 void wifi_manager_start(void);
+void wifi_manager_stop(void);
+void wifi_manager_emergency_stop(void);
 void wifi_manager_request_connect(const char *ssid, const char *password);
 void wifi_manager_request_clear_and_ap(void);
 void wifi_manager_request_close_ap(void);
